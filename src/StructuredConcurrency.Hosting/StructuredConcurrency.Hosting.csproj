@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Shared settings, including the version, are in src/Directory.Build.props. -->
+  <PropertyGroup>
+    <PackageId>StructuredConcurrency.Hosting</PackageId>
+    <Title>StructuredConcurrency.Hosting: structured concurrency for BackgroundService</Title>
+    <Description>A BackgroundService whose work runs in a StructuredConcurrency TaskGroup: on shutdown every child task is cancelled and awaited, and a failing child stops the service with its real exception instead of leaving work running in the background.</Description>
+    <PackageTags>backgroundservice;hostedservice;worker;hosting;graceful-shutdown;structured-concurrency;taskgroup;async;cancellation</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\StructuredConcurrency\StructuredConcurrency.csproj" />
+  </ItemGroup>
+
+</Project>

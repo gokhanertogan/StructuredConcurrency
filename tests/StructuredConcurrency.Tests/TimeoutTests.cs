@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Time.Testing;
+
 namespace StructuredConcurrency.Tests;
 
 // Operations that time out wait on the token, so the outcome never depends on how long the timer actually takes.
@@ -110,5 +112,51 @@ public class TimeoutTests
     public async Task WithTimeout_InfiniteTimeout_NeverTimesOut()
     {
         Assert.Equal(7, await TaskGroup.WithTimeoutAsync(Timeout.InfiniteTimeSpan, _ => Task.FromResult(7)));
+    }
+
+    // ----------------------------------------------------------------------------------------------------------------
+    // TimeProvider: the timeout fires when the fake clock is advanced, not when real time passes.
+
+    [Fact]
+    public async Task TimeProvider_TimesOutOnlyWhenItsTimePasses()
+    {
+        var time = new FakeTimeProvider();
+        var started = new TaskCompletionSource();
+
+        Task<int> run = TaskGroup.WithTimeoutAsync(TimeSpan.FromHours(1), time, async ct =>
+        {
+            started.SetResult();
+            await Task.Delay(Timeout.Infinite, ct);
+            return 1;
+        });
+        await started.Task;
+
+        time.Advance(TimeSpan.FromMinutes(59));
+        await Task.Delay(50);
+        Assert.False(run.IsCompleted);
+
+        time.Advance(TimeSpan.FromMinutes(1));
+        await Assert.ThrowsAsync<TimeoutException>(() => run.WaitAsync(TimeSpan.FromSeconds(10)));
+    }
+
+    [Fact]
+    public async Task TimeProvider_WorksWithEveryVariant()
+    {
+        var time = new FakeTimeProvider();
+        using var caller = new CancellationTokenSource();   // a cancellable caller token takes the linked path
+
+        Task<int> orDefault = TaskGroup.WithTimeoutOrDefaultAsync(TimeSpan.FromSeconds(1), time, async ct =>
+        {
+            await Task.Delay(Timeout.Infinite, ct);
+            return 1;
+        }, defaultValue: -1, caller.Token);
+        Task<bool> tried = TaskGroup.TryWithTimeoutAsync(TimeSpan.FromSeconds(1), time, ct => Task.Delay(Timeout.Infinite, ct));
+        Task plain = TaskGroup.WithTimeoutAsync(TimeSpan.FromSeconds(1), time, ct => Task.Delay(Timeout.Infinite, ct));
+
+        time.Advance(TimeSpan.FromSeconds(1));
+
+        Assert.Equal(-1, await orDefault.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.False(await tried.WaitAsync(TimeSpan.FromSeconds(10)));
+        await Assert.ThrowsAsync<TimeoutException>(() => plain.WaitAsync(TimeSpan.FromSeconds(10)));
     }
 }

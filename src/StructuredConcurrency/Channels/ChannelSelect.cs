@@ -13,9 +13,27 @@ namespace StructuredConcurrency.Channels;
 public sealed class ChannelSelect
 {
     private readonly List<SelectCase> _cases = [];
+    private readonly TimeProvider _timeProvider;
     private TimeSpan _timeout;
     private Func<Task>? _onTimeout;
     private Func<Task>? _onDefault;
+
+    /// <summary>Initializes a new instance of the <see cref="ChannelSelect"/> class.</summary>
+    public ChannelSelect()
+        : this(TimeProvider.System)
+    {
+    }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="ChannelSelect"/> class that measures its timeout case with
+    /// <paramref name="timeProvider"/>.
+    /// </summary>
+    /// <param name="timeProvider">Measures the timeout; pass a fake one in tests to make time pass on demand.</param>
+    public ChannelSelect(TimeProvider timeProvider)
+    {
+        ArgumentNullException.ThrowIfNull(timeProvider);
+        _timeProvider = timeProvider;
+    }
 
     /// <summary>Adds a case that reads one item from <paramref name="reader"/> and passes it to <paramref name="handler"/>.</summary>
     /// <typeparam name="T">The type of the channel's items.</typeparam>
@@ -161,7 +179,7 @@ public sealed class ChannelSelect
                 waits ??= new Task<bool>?[count];
                 if (_onTimeout is not null)
                 {
-                    timeout ??= Task.Delay(_timeout, waitCts.Token);
+                    timeout ??= Task.Delay(_timeout, _timeProvider, waitCts.Token);
                 }
 
                 var pending = new List<Task>(count + 1);

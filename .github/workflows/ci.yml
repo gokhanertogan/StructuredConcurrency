@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -17,6 +17,7 @@ jobs:
             10.0.x
       - run: dotnet test -c Release
       - run: dotnet pack src/StructuredConcurrency -c Release -o artifacts
+      - run: dotnet pack src/StructuredConcurrency.Hosting -c Release -o artifacts
       - uses: actions/upload-artifact@v4
         with:
           name: packages

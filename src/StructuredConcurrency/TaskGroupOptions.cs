@@ -16,6 +16,23 @@ public sealed class TaskGroupOptions
     public bool CancelOnFailure { get; init; } = true;
 
     /// <summary>
+    /// Gets the group's name, used as the display name of its tracing activity. Defaults to <c>TaskGroup</c>.
+    /// </summary>
+    /// <remarks>
+    /// When tracing is enabled (an OpenTelemetry tracer or another <see cref="System.Diagnostics.ActivityListener"/>
+    /// subscribes to the <c>StructuredConcurrency</c> source), each group records an activity that its children's
+    /// activities nest under.
+    /// </remarks>
+    public string? Name { get; init; }
+
+    /// <summary>
+    /// Gets a value indicating whether the group records a tracing activity when tracing is enabled. Defaults to
+    /// <see langword="true"/>. Turn it off for a group that lives as long as the application, whose activity would
+    /// otherwise put everything its children trace into one trace that never ends.
+    /// </summary>
+    public bool EnableTracing { get; init; } = true;
+
+    /// <summary>
     /// Gets the maximum number of children that run at the same time, or <see langword="null"/> for no limit.
     /// </summary>
     /// <remarks>

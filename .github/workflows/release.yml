@@ -8,7 +8,7 @@ on:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
@@ -27,6 +27,7 @@ jobs:
             exit 1
           fi
       - run: dotnet pack src/StructuredConcurrency -c Release -o artifacts
+      - run: dotnet pack src/StructuredConcurrency.Hosting -c Release -o artifacts
       # Also pushes the .snupkg symbols package next to each .nupkg.
       - run: dotnet nuget push "artifacts/*.nupkg" --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
         env:

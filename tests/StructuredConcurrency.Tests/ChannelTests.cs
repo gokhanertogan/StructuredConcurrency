@@ -1,4 +1,5 @@
 using System.Threading.Channels;
+using Microsoft.Extensions.Time.Testing;
 using StructuredConcurrency.Channels;
 
 namespace StructuredConcurrency.Tests;
@@ -436,6 +437,26 @@ public class ChannelTests
         await source.Reader.BroadcastAsync([cancelled.Writer, healthy.Writer]).WaitAsync(Guard);
 
         Assert.Equal([1, 2], await healthy.Reader.ReadAllAsync().ToListAsync());
+    }
+
+    [Fact]
+    public async Task Select_TimeProvider_FiresTheTimeoutWhenItsTimePasses()
+    {
+        var time = new FakeTimeProvider();
+        var channel = Unbounded<int>();
+        bool timedOut = false;
+
+        Task<bool> run = new ChannelSelect(time)
+            .Case(channel.Reader, (int _) => { })
+            .Timeout(TimeSpan.FromMinutes(5), () => timedOut = true)
+            .RunAsync();
+
+        await Task.Delay(50);
+        Assert.False(run.IsCompleted);
+
+        time.Advance(TimeSpan.FromMinutes(5));
+        Assert.True(await run.WaitAsync(Guard));
+        Assert.True(timedOut);
     }
 }
 

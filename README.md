@@ -151,7 +151,17 @@ User? cached = await TaskGroup.WithTimeoutOrDefaultAsync(TimeSpan.FromMillisecon
 bool finished = await TaskGroup.TryWithTimeoutAsync(TimeSpan.FromSeconds(30), ct => WarmUpAsync(ct));
 ```
 
-To put a deadline on a whole group, wrap it: `TaskGroup.WithTimeoutAsync(timeout, ct => TaskGroup.RunAsync(body, ct))`. Only a cancellation that comes from the timer becomes a `TimeoutException`. Your own token's cancellation, or a timeout inside the operation, comes through unchanged.
+To put a deadline on a whole group, wrap it: `TaskGroup.WithTimeoutAsync(timeout, ct => TaskGroup.RunAsync(body, ct))`. Only a cancellation that comes from the timer becomes a `TimeoutException`. Your own token's cancellation, or a timeout inside the operation, comes through unchanged. See [`samples/TimeoutVsWaitAsync`](samples/TimeoutVsWaitAsync/Program.cs) for the three approaches side by side.
+
+Every timeout method also takes a `TimeProvider`, and so does `new ChannelSelect(timeProvider)`. Pass a `FakeTimeProvider` in tests and time passes only when you advance it:
+
+```csharp
+var time = new FakeTimeProvider();   // Microsoft.Extensions.TimeProvider.Testing
+Task<User> load = TaskGroup.WithTimeoutAsync(TimeSpan.FromSeconds(30), time, ct => LoadUserAsync(id, ct));
+
+time.Advance(TimeSpan.FromSeconds(30));
+await Assert.ThrowsAsync<TimeoutException>(() => load);   // no 30-second test
+```
 
 ## Start a task and wait until it's ready
 
@@ -186,6 +196,48 @@ public Task<Product> GetProductAsync(string id, CancellationToken cancellationTo
 ```
 
 Results aren't cached: once the operation completes, the next call starts a new one, so put it behind your cache. Each caller's token stops only that caller's wait. The shared operation is cancelled only when *every* caller has given up, and the last one to give up waits for it to stop. `Forget(key)` makes the next call start fresh even while an operation is running.
+
+## Background services that shut down cleanly
+
+The `StructuredConcurrency.Hosting` package adds `StructuredBackgroundService`, a `BackgroundService` whose work runs in a `TaskGroup`.
+
+```
+dotnet add package StructuredConcurrency.Hosting
+```
+
+```csharp
+using StructuredConcurrency.Hosting;
+
+public sealed class OrderWorker(IQueue queue, IMetrics metrics) : StructuredBackgroundService
+{
+    protected override Task ExecuteAsync(TaskGroup group)
+    {
+        group.Run(ct => ConsumeOrdersAsync(queue, ct));
+        group.Run(ct => PublishMetricsAsync(metrics, ct));
+        return Task.CompletedTask;
+    }
+}
+```
+
+When the host stops, every child is cancelled and `StopAsync` returns only after all of them have ended. If a child fails, the others are cancelled and the service stops with that exception, which the host logs and (by default) uses to stop the application. A plain `BackgroundService` gives neither: work started with `Task.Run` keeps running after shutdown, and its exceptions disappear. Override `Options` to set `MaxConcurrency` or `CancelOnFailure = false`. The service's group doesn't record a tracing activity: it lives as long as the host, so its span would never end. What the children trace is recorded as usual.
+
+## Tracing with OpenTelemetry
+
+Every group records an `Activity`, and the activities of its children nest under it, including children that waited in a `MaxConcurrency` queue. Subscribe to the source to see them:
+
+```csharp
+builder.Services.AddOpenTelemetry().WithTracing(tracing => tracing.AddSource(TaskGroup.ActivitySourceName));
+
+await TaskGroup.RunAsync(body, new TaskGroupOptions { Name = "load-dashboard" }, cancellationToken);
+```
+
+Each group's activity has these tags:
+
+- `taskgroup.children`: how many children were added with `Run`, including queued ones that never started.
+- `taskgroup.outcome`: `success`, `failed` or `cancelled`.
+- `taskgroup.cancelled_by`: `failure`, `caller` or `Cancel`, when it was cancelled.
+
+A failed group has error status and one `exception` event per failure, so a trace shows which child failed and which ones were cancelled because of it. `AllAsync`, `AnyAsync` and `AllSettledAsync` name their groups after themselves. Set `EnableTracing = false` on a group you don't want traced. With no listener, `ActivitySource` creates nothing.
 
 ## Go channels in C#: select, merge and broadcast
 
@@ -332,6 +384,14 @@ Wrap the load in `SingleFlight<TKey, TValue>.RunAsync(key, ...)`. Concurrent mis
 
 `ChannelSelect` in the `StructuredConcurrency.Channels` namespace. Add a `Case` per `ChannelReader`, plus optional `Timeout` and `Default` cases, and call `RunAsync`. It runs exactly one case, picking at random among the ready channels like Go does. Hand-written versions built on `WaitToReadAsync` and `Task.WhenAny` tend to always favour the first channel and to leave waits pending after they return.
 
+### How do I stop all tasks in a BackgroundService on shutdown?
+
+Derive from `StructuredBackgroundService` in `StructuredConcurrency.Hosting` and start the work with `group.Run`. On shutdown the group's token is cancelled, and the service waits for every child to end before `StopAsync` returns. A child that fails stops the service with its exception instead of failing silently.
+
+### How do I test code that uses a timeout without waiting for it?
+
+Pass a `FakeTimeProvider` from `Microsoft.Extensions.TimeProvider.Testing` to the `TimeProvider` overload of `WithTimeoutAsync`, `WithTimeoutOrDefaultAsync` or `TryWithTimeoutAsync`, or to `new ChannelSelect(timeProvider)`. Then call `Advance` to make the time pass.
+
 ### Does it run tasks on the thread pool?
 
 No. `group.Run` invokes the delegate on the calling thread, like calling an async method. Wrap CPU-bound work in `Task.Run`. With `MaxConcurrency`, queued work starts on the thread that freed the slot, but with the `ExecutionContext` `Run` was called in, so `AsyncLocal` values and tracing flow as if it had started right away. It doesn't go back to a UI `SynchronizationContext`.
@@ -346,26 +406,28 @@ The benchmark compares TaskGroup with the code it replaces: a hand-written `Canc
 
 | Children | Children complete | Hand-written | TaskGroup | Hand-written alloc. | TaskGroup alloc. |
 | ---: | --- | ---: | ---: | ---: | ---: |
-| 2 | asynchronously | 2.07 μs | 2.06 μs | 850 B | 638 B |
-| 10 | asynchronously | 6.89 μs | 7.18 μs | 2,710 B | 2,277 B |
-| 100 | asynchronously | 41.0 μs | 43.9 μs | 25,334 B | 20,918 B |
-| 2 | synchronously | 49 ns | 66 ns | 160 B | 224 B |
-| 10 | synchronously | 98 ns | 152 ns | 224 B | 224 B |
-| 100 | synchronously | 876 ns | 1,231 ns | 944 B | 224 B |
+| 2 | asynchronously | 1.87 μs | 1.95 μs | 850 B | 663 B |
+| 10 | asynchronously | 5.32 μs | 6.64 μs | 2,663 B | 2,303 B |
+| 100 | asynchronously | 38.0 μs | 43.8 μs | 26,109 B | 20,896 B |
+| 2 | synchronously | 37 ns | 71 ns | 160 B | 248 B |
+| 10 | synchronously | 94 ns | 160 ns | 224 B | 248 B |
+| 100 | synchronously | 896 ns | 1,211 ns | 944 B | 248 B |
 
-When children do real asynchronous work, TaskGroup runs within the benchmark's noise (about ±10%) of the hand-written code and allocates 16–25% less. When children complete synchronously, it costs about 3.5 ns more per child, but its allocation stays at 224 B regardless of the number of children. `AnyAsync` over three operations takes 3.6 μs, against 4.1 μs for a hand-written `Task.WhenEach` loop, but allocates 1,840 B against 931 B.
+When children do real asynchronous work, TaskGroup takes 5–25% longer than the hand-written code in this run (these numbers move by about ±10% between runs) and allocates 14–22% less. When children complete synchronously, it costs about 3 ns more per child, but its allocation stays at 248 B regardless of the number of children. Tracing costs nothing measurable when no listener is subscribed. `AnyAsync` over three operations takes 3.6 μs, against 4.1 μs for a hand-written `Task.WhenEach` loop, but allocates 1,840 B against 931 B.
 
 ## Status
 
-Version 0.4 includes:
+Version 0.5 includes:
 
-- `TaskGroup.RunAsync`, `Run`, `StartAsync`, `Cancel` and `TaskGroupOptions` (with `CancelOnFailure` and `MaxConcurrency`)
+- `TaskGroup.RunAsync`, `Run`, `StartAsync`, `Cancel` and `TaskGroupOptions` (with `CancelOnFailure`, `MaxConcurrency` and `Name`)
 - `AllAsync`, `AnyAsync`, `AllSettledAsync` and `TaskOutcome<T>`
-- `WithTimeoutAsync`, `WithTimeoutOrDefaultAsync` and `TryWithTimeoutAsync`
+- `WithTimeoutAsync`, `WithTimeoutOrDefaultAsync` and `TryWithTimeoutAsync`, with or without a `TimeProvider`
+- OpenTelemetry tracing through the `TaskGroup.ActivitySourceName` source
 - `SelectConcurrentAsync` and `SingleFlight<TKey, TValue>`
 - in `StructuredConcurrency.Channels`: `ChannelSelect`, `MergeWith`, `BroadcastAsync` and `group.Produce`
+- in the `StructuredConcurrency.Hosting` package: `StructuredBackgroundService`
 
-The API may change before 1.0.
+The API may change before 1.0, but each release is checked against the previous one with package validation, so a breaking change is always deliberate.
 
 Targets .NET 8 and later, and is trimming and NativeAOT compatible.
 

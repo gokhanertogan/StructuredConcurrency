@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 
 namespace StructuredConcurrency;
@@ -15,6 +16,15 @@ public sealed partial class TaskGroup
     private const int StateOpen = 0;
     private const int StateCancelling = 1;
     private const int StateCompleted = 2;
+
+    /// <summary>
+    /// The name of the <see cref="ActivitySource"/> that groups record their tracing activities with. Add it to your
+    /// OpenTelemetry tracer, for example with <c>AddSource(TaskGroup.ActivitySourceName)</c>.
+    /// </summary>
+    public const string ActivitySourceName = "StructuredConcurrency";
+
+    private static readonly ActivitySource s_activitySource =
+        new(ActivitySourceName, typeof(TaskGroup).Assembly.GetName().Version?.ToString());
 
     private static readonly Action<Task, object?> s_onChildCompleted =
         static (task, state) => ((TaskGroup)state!).OnCompleted(task, isBody: false);
@@ -44,6 +54,9 @@ public sealed partial class TaskGroup
     private bool _bodyCanceled;
     private List<Exception>? _failures;
 
+    // Only while tracing, so a group that isn't traced stays small.
+    private readonly Trace? _trace;
+
     // Only used with a concurrency limit: children waiting for a slot, guarded by locking the queue itself.
     private readonly int _maxConcurrency;
     private readonly Queue<QueuedChild>? _queue;
@@ -58,6 +71,16 @@ public sealed partial class TaskGroup
             ? CancellationTokenSource.CreateLinkedTokenSource(callerToken)
             : new CancellationTokenSource();
         CancellationToken = _cts.Token;
+
+        // Becomes Activity.Current while the body runs (see LeaveActivity), so the children's activities nest under it.
+        if (options.EnableTracing)
+        {
+            Activity? previous = Activity.Current;
+            if (s_activitySource.StartActivity(options.Name ?? "TaskGroup") is Activity activity)
+            {
+                _trace = new Trace(activity, previous);
+            }
+        }
 
         if (options.MaxConcurrency is int maxConcurrency)
         {
@@ -114,6 +137,10 @@ public sealed partial class TaskGroup
         {
             task = Task.FromException(exception);
         }
+        finally
+        {
+            group.LeaveActivity();
+        }
 
         completer.Body = task;
         group.Track(task, isBody: true);
@@ -164,6 +191,10 @@ public sealed partial class TaskGroup
         catch (Exception exception)
         {
             task = Task.FromException<TResult>(exception);
+        }
+        finally
+        {
+            group.LeaveActivity();
         }
 
         completer.Body = task;
@@ -230,7 +261,21 @@ public sealed partial class TaskGroup
     /// Cancels the remaining children without counting as a failure. Cancellations that result from it are not
     /// reported.
     /// </summary>
-    public void Cancel() => CancelCore();
+    public void Cancel() => CancelCore("Cancel");
+
+    // The group's activity is current from its start until the body returns; the caller then gets its own back.
+    private void LeaveActivity()
+    {
+        if (_trace is not null)
+        {
+            Activity.Current = _trace.Previous;
+            if (Activity.Current == _trace.Activity)
+            {
+                // The setter ignores an activity that has stopped since; the group's must not stay current either way.
+                Activity.Current = null;
+            }
+        }
+    }
 
     private static Task Invoke(Func<CancellationToken, Task> work, CancellationToken cancellationToken)
     {
@@ -273,6 +318,10 @@ public sealed partial class TaskGroup
             int seen = Interlocked.CompareExchange(ref _outstanding, count + 1, count);
             if (seen == count)
             {
+                if (_trace is not null)
+                {
+                    Interlocked.Increment(ref _trace.Children);
+                }
                 return true;
             }
             count = seen;
@@ -459,7 +508,7 @@ public sealed partial class TaskGroup
         // The body failing always ends the group; a child failing does unless the group supervises its children.
         if (_cancelOnFailure || isBody)
         {
-            CancelCore();
+            CancelCore("failure");
         }
     }
 
@@ -480,11 +529,16 @@ public sealed partial class TaskGroup
         }
     }
 
-    private void CancelCore()
+    private void CancelCore(string reason)
     {
         if (Interlocked.CompareExchange(ref _state, StateCancelling, StateOpen) != StateOpen)
         {
             return;
+        }
+        if (_trace is not null)
+        {
+            // The caller's token cancels the group without coming through here; if it already has, it was first.
+            _trace.CancelledBy = CancellationToken.IsCancellationRequested ? "caller" : reason;
         }
 
         try
@@ -511,16 +565,29 @@ public sealed partial class TaskGroup
         _cts.Dispose();
 
         List<Exception>? failures = _failures;
+        Exception[]? snapshot = null;
         if (failures is not null)
         {
-            Exception[] snapshot;
             lock (failures)
             {
                 snapshot = failures.ToArray();
             }
+        }
+
+        // Read once, so the activity records the same outcome the task ends with.
+        bool callerCancelled = _callerToken.IsCancellationRequested;
+
+        // Before the result is published, so the activity has ended by the time the caller continues.
+        if (_trace is not null)
+        {
+            StopActivity(_trace, snapshot, callerCancelled);
+        }
+
+        if (snapshot is not null)
+        {
             _completer.TrySetException(snapshot);
         }
-        else if (_callerToken.IsCancellationRequested)
+        else if (callerCancelled)
         {
             _completer.TrySetCanceled(_callerToken);
         }
@@ -532,6 +599,53 @@ public sealed partial class TaskGroup
         {
             _completer.SetSuccess();
         }
+    }
+
+    private void StopActivity(Trace trace, Exception[]? failures, bool callerCancelled)
+    {
+        Activity activity = trace.Activity;
+        activity.SetTag("taskgroup.children", Volatile.Read(ref trace.Children));
+        string? cancelledBy = trace.CancelledBy ?? (callerCancelled ? "caller" : null);
+        if (cancelledBy is not null)
+        {
+            activity.SetTag("taskgroup.cancelled_by", cancelledBy);
+        }
+
+        if (failures is not null)
+        {
+            activity.SetTag("taskgroup.outcome", "failed");
+            activity.SetStatus(ActivityStatusCode.Error, failures[0].Message);
+            foreach (Exception failure in failures)
+            {
+                // The OpenTelemetry semantic conventions for a recorded exception.
+                activity.AddEvent(new ActivityEvent("exception", tags: new ActivityTagsCollection
+                {
+                    ["exception.type"] = failure.GetType().FullName,
+                    ["exception.message"] = failure.Message,
+                    ["exception.stacktrace"] = failure.ToString(),
+                }));
+            }
+        }
+        else
+        {
+            activity.SetTag("taskgroup.outcome", callerCancelled || _bodyCanceled ? "cancelled" : "success");
+        }
+
+        // Stop() may reset Activity.Current; the thread completing the group keeps whatever it had, except the group's
+        // own activity, which it can still have in a child's continuation registered while the body ran.
+        Activity? current = Activity.Current;
+        activity.Stop();
+        Activity.Current = current == activity ? activity.Parent : current;
+    }
+
+    // The group's activity, the caller's current activity to give back, the number of children added with Run
+    // (including queued ones that never started), and why the group was cancelled.
+    private sealed class Trace(Activity activity, Activity? previous)
+    {
+        public readonly Activity Activity = activity;
+        public readonly Activity? Previous = previous;
+        public int Children;
+        public string? CancelledBy;
     }
 
     private interface ICompleter

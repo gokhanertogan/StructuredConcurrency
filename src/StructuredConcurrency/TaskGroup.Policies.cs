@@ -4,6 +4,11 @@ namespace StructuredConcurrency;
 // Promise.allSettled. Each runs its operations as children of a TaskGroup, so none of them outlives the call.
 public sealed partial class TaskGroup
 {
+    // Each policy names its group, so its tracing activity says which policy ran.
+    private static readonly TaskGroupOptions s_allOptions = new() { Name = "TaskGroup.AllAsync" };
+    private static readonly TaskGroupOptions s_anyOptions = new() { Name = "TaskGroup.AnyAsync" };
+    private static readonly TaskGroupOptions s_allSettledOptions = new() { Name = "TaskGroup.AllSettledAsync" };
+
     // ---------------------------------------------------------------------------------------------------------------
     // All: every operation must succeed; the first failure cancels the rest.
 
@@ -28,7 +33,7 @@ public sealed partial class TaskGroup
             Task<T1> a = group.Run(first);
             Task<T2> b = group.Run(second);
             return (await a.ConfigureAwait(false), await b.ConfigureAwait(false));
-        }, cancellationToken);
+        }, s_allOptions, cancellationToken);
     }
 
     /// <summary>
@@ -57,7 +62,7 @@ public sealed partial class TaskGroup
             Task<T2> b = group.Run(second);
             Task<T3> c = group.Run(third);
             return (await a.ConfigureAwait(false), await b.ConfigureAwait(false), await c.ConfigureAwait(false));
-        }, cancellationToken);
+        }, s_allOptions, cancellationToken);
     }
 
     /// <summary>
@@ -115,7 +120,7 @@ public sealed partial class TaskGroup
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(operation);
         ArgumentOutOfRangeException.ThrowIfLessThan(maxConcurrency, 1);
-        return AllCore(source.ToArray(), operation, cancellationToken, new TaskGroupOptions { MaxConcurrency = maxConcurrency });
+        return AllCore(source.ToArray(), operation, cancellationToken, new TaskGroupOptions { Name = s_allOptions.Name, MaxConcurrency = maxConcurrency });
     }
 
     private static Task<TResult[]> AllCore<TSource, TResult>(
@@ -135,7 +140,7 @@ public sealed partial class TaskGroup
 
             // The group completes only after every child has, so the array is filled when this result is observed.
             return Task.FromResult(results);
-        }, options ?? TaskGroupOptions.Default, cancellationToken);
+        }, options ?? s_allOptions, cancellationToken);
     }
 
     // ---------------------------------------------------------------------------------------------------------------
@@ -263,7 +268,7 @@ public sealed partial class TaskGroup
                 });
             }
             return Task.CompletedTask;
-        }, cancellationToken).ConfigureAwait(false);
+        }, s_anyOptions, cancellationToken).ConfigureAwait(false);
 
         if (state.Won == 1)
         {
@@ -301,7 +306,7 @@ public sealed partial class TaskGroup
             Task<TaskOutcome<T1>> a = group.Run(ct => SettleAsync(first, ct));
             Task<TaskOutcome<T2>> b = group.Run(ct => SettleAsync(second, ct));
             return (await a.ConfigureAwait(false), await b.ConfigureAwait(false));
-        }, cancellationToken);
+        }, s_allSettledOptions, cancellationToken);
     }
 
     /// <summary>Runs three operations concurrently and returns how each one ended. Failures don't cancel the others.</summary>
@@ -328,7 +333,7 @@ public sealed partial class TaskGroup
             Task<TaskOutcome<T2>> b = group.Run(ct => SettleAsync(second, ct));
             Task<TaskOutcome<T3>> c = group.Run(ct => SettleAsync(third, ct));
             return (await a.ConfigureAwait(false), await b.ConfigureAwait(false), await c.ConfigureAwait(false));
-        }, cancellationToken);
+        }, s_allSettledOptions, cancellationToken);
     }
 
     /// <summary>
@@ -386,7 +391,7 @@ public sealed partial class TaskGroup
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(operation);
         ArgumentOutOfRangeException.ThrowIfLessThan(maxConcurrency, 1);
-        return AllSettledCore(source.ToArray(), operation, cancellationToken, new TaskGroupOptions { MaxConcurrency = maxConcurrency });
+        return AllSettledCore(source.ToArray(), operation, cancellationToken, new TaskGroupOptions { Name = s_allSettledOptions.Name, MaxConcurrency = maxConcurrency });
     }
 
     private static Task<TaskOutcome<TResult>[]> AllSettledCore<TSource, TResult>(
@@ -406,7 +411,7 @@ public sealed partial class TaskGroup
 
             // The group completes only after every child has, so the array is filled when this result is observed.
             return Task.FromResult(outcomes);
-        }, options ?? TaskGroupOptions.Default, cancellationToken);
+        }, options ?? s_allSettledOptions, cancellationToken);
     }
 
     private static async Task<TaskOutcome<T>> SettleAsync<T>(Func<CancellationToken, Task<T>> operation, CancellationToken cancellationToken)

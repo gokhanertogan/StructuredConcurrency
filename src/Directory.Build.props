@@ -1,0 +1,34 @@
+<Project>
+
+  <!-- Shared by every package in src/. They are versioned and released together. -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <IsAotCompatible>true</IsAotCompatible>
+
+    <Version>0.5.0</Version>
+    <Authors>Gokhan Ertogan</Authors>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <Copyright>Copyright (c) 2026 Gokhan Ertogan</Copyright>
+    <PackageProjectUrl>https://github.com/gokhanertogan/StructuredConcurrency</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/gokhanertogan/StructuredConcurrency</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+
+    <!-- Source Link: lets consumers step into this code from the debugger. -->
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>
