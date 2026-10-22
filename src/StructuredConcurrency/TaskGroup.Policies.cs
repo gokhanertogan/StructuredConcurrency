@@ -95,10 +95,34 @@ public sealed partial class TaskGroup
         return AllCore(source.ToArray(), operation, cancellationToken);
     }
 
+    /// <summary>
+    /// Runs <paramref name="operation"/> for every item, at most <paramref name="maxConcurrency"/> at a time, and returns
+    /// the results in input order. The first failure cancels the rest, and items not yet started are skipped.
+    /// </summary>
+    /// <typeparam name="TSource">The type of the items.</typeparam>
+    /// <typeparam name="TResult">The type of the results.</typeparam>
+    /// <param name="source">The items to run the operation for.</param>
+    /// <param name="operation">The operation to run for each item.</param>
+    /// <param name="maxConcurrency">The maximum number of operations that run at the same time; at least 1.</param>
+    /// <param name="cancellationToken">Cancels all operations.</param>
+    /// <returns>The results in input order; awaiting it throws the first failure.</returns>
+    public static Task<TResult[]> AllAsync<TSource, TResult>(
+        IEnumerable<TSource> source,
+        Func<TSource, CancellationToken, Task<TResult>> operation,
+        int maxConcurrency,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(operation);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxConcurrency, 1);
+        return AllCore(source.ToArray(), operation, cancellationToken, new TaskGroupOptions { MaxConcurrency = maxConcurrency });
+    }
+
     private static Task<TResult[]> AllCore<TSource, TResult>(
         TSource[] items,
         Func<TSource, CancellationToken, Task<TResult>> operation,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TaskGroupOptions? options = null)
     {
         var results = new TResult[items.Length];
         return RunAsync(group =>
@@ -111,7 +135,7 @@ public sealed partial class TaskGroup
 
             // The group completes only after every child has, so the array is filled when this result is observed.
             return Task.FromResult(results);
-        }, cancellationToken);
+        }, options ?? TaskGroupOptions.Default, cancellationToken);
     }
 
     // ---------------------------------------------------------------------------------------------------------------
@@ -342,10 +366,34 @@ public sealed partial class TaskGroup
         return AllSettledCore(source.ToArray(), operation, cancellationToken);
     }
 
+    /// <summary>
+    /// Runs <paramref name="operation"/> for every item, at most <paramref name="maxConcurrency"/> at a time, and
+    /// returns how each one ended, in input order. Failures don't cancel the others.
+    /// </summary>
+    /// <typeparam name="TSource">The type of the items.</typeparam>
+    /// <typeparam name="TResult">The type of the results.</typeparam>
+    /// <param name="source">The items to run the operation for.</param>
+    /// <param name="operation">The operation to run for each item.</param>
+    /// <param name="maxConcurrency">The maximum number of operations that run at the same time; at least 1.</param>
+    /// <param name="cancellationToken">Cancels all operations; the call then ends as cancelled.</param>
+    /// <returns>The outcome of each operation, in input order.</returns>
+    public static Task<TaskOutcome<TResult>[]> AllSettledAsync<TSource, TResult>(
+        IEnumerable<TSource> source,
+        Func<TSource, CancellationToken, Task<TResult>> operation,
+        int maxConcurrency,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(operation);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxConcurrency, 1);
+        return AllSettledCore(source.ToArray(), operation, cancellationToken, new TaskGroupOptions { MaxConcurrency = maxConcurrency });
+    }
+
     private static Task<TaskOutcome<TResult>[]> AllSettledCore<TSource, TResult>(
         TSource[] items,
         Func<TSource, CancellationToken, Task<TResult>> operation,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TaskGroupOptions? options = null)
     {
         var outcomes = new TaskOutcome<TResult>[items.Length];
         return RunAsync(group =>
@@ -358,7 +406,7 @@ public sealed partial class TaskGroup
 
             // The group completes only after every child has, so the array is filled when this result is observed.
             return Task.FromResult(outcomes);
-        }, cancellationToken);
+        }, options ?? TaskGroupOptions.Default, cancellationToken);
     }
 
     private static async Task<TaskOutcome<T>> SettleAsync<T>(Func<CancellationToken, Task<T>> operation, CancellationToken cancellationToken)

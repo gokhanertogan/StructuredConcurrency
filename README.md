@@ -5,7 +5,7 @@
 [![CI](https://github.com/gokhanertogan/StructuredConcurrency/actions/workflows/ci.yml/badge.svg)](https://github.com/gokhanertogan/StructuredConcurrency/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Structured concurrency for C#.** Run tasks in parallel inside a `TaskGroup`. The first failure cancels the other tasks, no task keeps running after the group returns, and you get the real error back instead of a `TaskCanceledException`. It includes C# versions of JavaScript's `Promise.all`, `Promise.any` and `Promise.allSettled`, and the same model as Python's `asyncio.TaskGroup`, Kotlin's `coroutineScope`, Swift's task groups, Java's `StructuredTaskScope` and Go's `errgroup`.
+**Structured concurrency for C#.** Run tasks in parallel inside a `TaskGroup`. The first failure cancels the other tasks, no task keeps running after the group returns, and you get the real error back instead of a `TaskCanceledException`. It includes C# versions of JavaScript's `Promise.all`, `Promise.any` and `Promise.allSettled`, Go's `select` for channels, and the same model as Python's `asyncio.TaskGroup`, Kotlin's `coroutineScope`, Swift's task groups, Java's `StructuredTaskScope` and Go's `errgroup`.
 
 ```
 dotnet add package StructuredConcurrency
@@ -102,6 +102,78 @@ await TaskGroup.RunAsync(async group =>
 
 Each child receives the group's `CancellationToken`. Children can start more children, and groups can be nested.
 
+### Limit how many tasks run at once
+
+Set `MaxConcurrency` to run at most N children at the same time, like Go's `errgroup.SetLimit`. `group.Run` never blocks: work beyond the limit waits in a queue and starts in order as slots free up. If the group fails or is cancelled, queued work is never started.
+
+```csharp
+await TaskGroup.RunAsync(async group =>
+{
+    foreach (var url in urls)
+    {
+        group.Run(ct => DownloadAsync(url, ct));   // at most 8 downloads at a time
+    }
+}, new TaskGroupOptions { MaxConcurrency = 8 }, cancellationToken);
+
+// Or get the results back, in input order:
+byte[][] files = await TaskGroup.AllAsync(urls, (url, ct) => DownloadAsync(url, ct), maxConcurrency: 8, cancellationToken);
+```
+
+## Go channels in C#: select, merge and broadcast
+
+`System.Threading.Channels` gives .NET Go-style channels, but not Go's `select` statement or the fan-in and fan-out patterns built around it. The `StructuredConcurrency.Channels` namespace adds them. None of them leave work running in the background.
+
+**`select` → `ChannelSelect`.** Wait on several channels and handle whichever has an item first. When several are ready, one is picked at random, as in Go, so no channel starves.
+
+```go
+// Go
+for {
+    select {
+    case order := <-orders:
+        handle(order)
+    case id := <-cancels:
+        cancel(id)
+    case <-time.After(5 * time.Second):
+        sendHeartbeat()
+    }
+}
+```
+
+```csharp
+// C#
+using StructuredConcurrency.Channels;
+
+var select = new ChannelSelect()
+    .Case(orders.Reader, order => HandleAsync(order))
+    .Case(cancels.Reader, id => CancelAsync(id))
+    .Timeout(TimeSpan.FromSeconds(5), () => SendHeartbeatAsync());
+
+while (await select.RunAsync(cancellationToken)) { }   // false once every channel has completed
+```
+
+`Default(...)` adds Go's `default` case: it runs when nothing is ready, so `RunAsync` never waits.
+
+**Fan-in → `MergeWith`.** Read several channels as one stream. It reads only while you enumerate, so there is no pump task to leak.
+
+```csharp
+await foreach (var e in clicks.Reader.MergeWith(keys.Reader, ticks.Reader).WithCancellation(cancellationToken))
+{
+    Handle(e);
+}
+```
+
+**Fan-out → `BroadcastAsync`.** Copy every item to several channels, then complete them. Run it as a TaskGroup child so it can't outlive the consumers:
+
+```csharp
+await TaskGroup.RunAsync(group =>
+{
+    group.Run(ct => events.Reader.BroadcastAsync([audit.Writer, metrics.Writer], ct));
+    group.Run(ct => WriteAuditLogAsync(audit.Reader, ct));
+    group.Run(ct => PublishMetricsAsync(metrics.Reader, ct));
+    return Task.CompletedTask;
+}, cancellationToken);
+```
+
 ### Coming from another language
 
 | Language | API | In C# |
@@ -112,6 +184,10 @@ Each child receives the group's `CancellationToken`. Children can start more chi
 | Swift | `withThrowingTaskGroup` | `TaskGroup.RunAsync` |
 | Java 21+ | `StructuredTaskScope` | `TaskGroup.RunAsync`, `TaskGroup.AnyAsync` |
 | Go | `errgroup.WithContext` | `TaskGroup.RunAsync`, `TaskGroup.AllAsync` |
+| Go | `errgroup.SetLimit` | `new TaskGroupOptions { MaxConcurrency = n }` |
+| Go | `select { case ... }` | `ChannelSelect` |
+| Go | Fan-in (merging channels) | `reader.MergeWith(...)` |
+| Go | Fan-out (one channel to many) | `reader.BroadcastAsync(...)` |
 
 ## Guarantees
 
@@ -139,6 +215,14 @@ Use `TaskGroup.AllAsync` for a fixed set of tasks, or `TaskGroup.RunAsync` for a
 
 Yes, and TaskGroup uses one internally. Doing it by hand means cancelling on every failure, awaiting every task in a `finally`, and filtering out the `OperationCanceledException`s you caused. The table above shows the most common hand-written version reporting "A task was canceled." instead of the real error.
 
+### How do I limit the number of concurrent tasks in C#?
+
+Set `TaskGroupOptions.MaxConcurrency`, or pass `maxConcurrency` to `AllAsync` or `AllSettledAsync`. The usual alternatives each cover part of it. A `SemaphoreSlim` around each task limits concurrency, but a failure doesn't stop the rest. `Parallel.ForEachAsync` has `MaxDegreeOfParallelism` and stops on the first failure, but it returns no results and has no way to collect every outcome.
+
+### What is the C# equivalent of Go's select statement?
+
+`ChannelSelect` in the `StructuredConcurrency.Channels` namespace. Add a `Case` per `ChannelReader`, plus optional `Timeout` and `Default` cases, and call `RunAsync`. It runs exactly one case, picking at random among the ready channels like Go does. Hand-written versions built on `WaitToReadAsync` and `Task.WhenAny` tend to always favour the first channel and to leave waits pending after they return.
+
 ### Does it run tasks on the thread pool?
 
 No. `group.Run` invokes the delegate on the calling thread, like calling an async method. Wrap CPU-bound work in `Task.Run`.
@@ -164,7 +248,7 @@ When children do real asynchronous work, TaskGroup runs within the benchmark's n
 
 ## Status
 
-Version 0.2 includes `TaskGroup.RunAsync`, `Run`, `Cancel`, `TaskGroupOptions`, `AllAsync`, `AnyAsync`, `AllSettledAsync` and `TaskOutcome<T>`. The API may change before 1.0.
+Version 0.3 includes `TaskGroup.RunAsync`, `Run`, `Cancel`, `TaskGroupOptions` (with `CancelOnFailure` and `MaxConcurrency`), `AllAsync`, `AnyAsync`, `AllSettledAsync` and `TaskOutcome<T>`, and in `StructuredConcurrency.Channels`, `ChannelSelect`, `MergeWith` and `BroadcastAsync`. The API may change before 1.0.
 
 Targets .NET 8 and later, and is trimming and NativeAOT compatible.
 
