@@ -9,7 +9,7 @@
 
     <!-- Fails the pack if the public API breaks compatibility with the last release. -->
     <EnablePackageValidation>true</EnablePackageValidation>
-    <PackageValidationBaselineVersion>0.5.0</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>0.6.0</PackageValidationBaselineVersion>
   </PropertyGroup>
 
   <ItemGroup>

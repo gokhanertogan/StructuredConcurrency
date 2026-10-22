@@ -136,6 +136,18 @@ await foreach (Page page in urls.SelectConcurrentAsync((url, ct) => FetchAsync(u
 
 `Parallel.ForEachAsync` returns no results, and .NET 9's `Task.WhenEach` has no limit and leaves the remaining tasks running when you `break`. Here, ending the loop for any reason (a `break`, the first failure or cancellation) cancels the operations still running and waits for them.
 
+The items can also come from an `IAsyncEnumerable`: rows from a database, pages from an API, or a channel. The source is read only as slots free up, so a slow source doesn't hold back results that are already done, and a fast one doesn't pile up work. Ending the loop cancels the source as well, and disposes it after the running operations have stopped.
+
+```csharp
+await foreach (Receipt receipt in orders.Reader.ReadAllAsync(cancellationToken)
+                                        .SelectConcurrentAsync((order, ct) => ChargeAsync(order, ct), maxConcurrency: 4))
+{
+    await SaveAsync(receipt);
+}
+```
+
+> **Upgrading from 0.6:** a type that is both `IEnumerable<T>` and `IAsyncEnumerable<T>`, such as an EF Core `DbSet<T>` or query, now matches both overloads, and the call no longer compiles (CS0121). Add `.AsAsyncEnumerable()` to read it asynchronously, which is what you want for a database, or `.AsEnumerable()` to keep reading it synchronously as before.
+
 ## Timeouts that cancel the work
 
 `task.WaitAsync(timeout)` stops *waiting* when the time is up, but the task keeps running with nobody watching it. `TaskGroup.WithTimeoutAsync` cancels the operation's token when the time is up and returns only after the operation has stopped, like Kotlin's `withTimeout`, Python's `asyncio.timeout` and Trio's `fail_after`.
@@ -392,7 +404,7 @@ Use `TaskGroup.WithTimeoutAsync(timeout, ct => OperationAsync(ct))`. It throws `
 
 ### How do I process items in parallel and get the results as they complete?
 
-`items.SelectConcurrentAsync((item, ct) => ProcessAsync(item, ct), maxConcurrency: n, preserveOrder: false)` returns an `IAsyncEnumerable` of the results in completion order; leave out `preserveOrder` to keep input order. Leaving the `await foreach` early cancels whatever is still running.
+`items.SelectConcurrentAsync((item, ct) => ProcessAsync(item, ct), maxConcurrency: n, preserveOrder: false)` returns an `IAsyncEnumerable` of the results in completion order; leave out `preserveOrder` to keep input order. `items` can be a collection or an `IAsyncEnumerable`, such as a channel's `ReadAllAsync()`. Leaving the `await foreach` early cancels whatever is still running.
 
 ### How do I prevent a cache stampede in C#?
 
@@ -439,13 +451,13 @@ When children do real asynchronous work, TaskGroup takes 5–25% longer than the
 
 ## Status
 
-Version 0.6 includes:
+Version 0.7 includes:
 
 - `TaskGroup.RunAsync`, `Run`, `StartAsync`, `Cancel` and `TaskGroupOptions` (with `CancelOnFailure`, `MaxConcurrency` and `Name`)
 - `AllAsync`, `AnyAsync`, `AllSettledAsync` and `TaskOutcome<T>`
 - `WithTimeoutAsync`, `WithTimeoutOrDefaultAsync` and `TryWithTimeoutAsync`, with or without a `TimeProvider`
 - OpenTelemetry tracing through the `TaskGroup.ActivitySourceName` source
-- `SelectConcurrentAsync` and `SingleFlight<TKey, TValue>`
+- `SelectConcurrentAsync`, over a collection or an `IAsyncEnumerable`, and `SingleFlight<TKey, TValue>`
 - in `StructuredConcurrency.Channels`: `ChannelSelect`, `MergeWith`, `BroadcastAsync` and `group.Produce`
 - in the `StructuredConcurrency.Hosting` package: `StructuredBackgroundService`
 - the `SC0001` and `SC0002` analyzers, with a code fix for `SC0002`

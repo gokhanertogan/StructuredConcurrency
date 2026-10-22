@@ -102,6 +102,8 @@ public class ChildTokenAnalyzerTests
         await TaskGroup.WithTimeoutAsync(TimeSpan.FromSeconds(1), {|SC0001:ct|} => Work());
         await new SingleFlight<string, int>().RunAsync("k", {|SC0001:ct|} => Get(1, default));
         await foreach (int x in items.SelectConcurrentAsync((item, {|SC0001:ct|}) => Get(item, default), 2)) { }
+        async IAsyncEnumerable<int> Numbers() { await Task.Yield(); yield return 1; }
+        await foreach (int x in Numbers().SelectConcurrentAsync((item, {|SC0001:ct|}) => Get(item, default), 2)) { }
         await TaskGroup.RunAsync(async group =>
         {
             await group.StartAsync((ready, {|SC0001:ct|}) => { ready(); return Work(); });

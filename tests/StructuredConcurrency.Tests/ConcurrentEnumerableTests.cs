@@ -1,3 +1,6 @@
+using System.Runtime.CompilerServices;
+using System.Threading.Channels;
+
 namespace StructuredConcurrency.Tests;
 
 public class ConcurrentEnumerableTests
@@ -214,6 +217,258 @@ public class ConcurrentEnumerableTests
     {
         Assert.Throws<ArgumentOutOfRangeException>(() => new[] { 1 }.SelectConcurrentAsync((i, _) => Task.FromResult(i), 0));
         Assert.Throws<ArgumentNullException>(() => new[] { 1 }.SelectConcurrentAsync<int, int>(null!, 1));
+    }
+
+    // ----------------------------------------------------------------------------------------------------------------
+    // IAsyncEnumerable sources
+
+    // Yields 0..count-1, each after its gate opens, and records what the enumeration did to it.
+    private sealed class Source(int count)
+    {
+        public TaskCompletionSource[] Gates { get; } = Enumerable.Range(0, count).Select(_ => new TaskCompletionSource()).ToArray();
+
+        private int _read;
+        private int _disposed;
+        private int _sawCancellation;
+
+        public int Read => Volatile.Read(ref _read);
+
+        public bool Disposed => Volatile.Read(ref _disposed) == 1;
+
+        public bool SawCancellation => Volatile.Read(ref _sawCancellation) == 1;
+
+        public async IAsyncEnumerable<int> Items([EnumeratorCancellation] CancellationToken ct = default)
+        {
+            try
+            {
+                for (int i = 0; i < count; i++)
+                {
+                    await Gates[i].Task.WaitAsync(ct);
+                    Interlocked.Increment(ref _read);
+                    yield return i;
+                }
+            }
+            finally
+            {
+                Volatile.Write(ref _sawCancellation, ct.IsCancellationRequested ? 1 : 0);
+                Volatile.Write(ref _disposed, 1);
+            }
+        }
+
+        public void OpenAll()
+        {
+            foreach (TaskCompletionSource gate in Gates)
+            {
+                gate.TrySetResult();
+            }
+        }
+    }
+
+    [Fact]
+    public async Task AsyncSource_YieldsEveryResult_InInputOrder()
+    {
+        var source = new Source(10);
+        source.OpenAll();
+        int running = 0, maxRunning = 0;
+
+        List<int> results = await source.Items().SelectConcurrentAsync(async (i, _) =>
+        {
+            InterlockedMax(ref maxRunning, Interlocked.Increment(ref running));
+            await Task.Delay(1);
+            Interlocked.Decrement(ref running);
+            return i * 10;
+        }, maxConcurrency: 3).ToListAsync().WaitAsync(Guard);
+
+        Assert.Equal(Enumerable.Range(0, 10).Select(i => i * 10), results);
+        Assert.InRange(maxRunning, 1, 3);
+        Assert.True(source.Disposed);
+    }
+
+    [Fact]
+    public async Task AsyncSource_IsReadOnlyAsSlotsFreeUp()
+    {
+        var source = new Source(10);
+        source.OpenAll();
+        var gate = new TaskCompletionSource<int>();
+
+        await using var results = source.Items().SelectConcurrentAsync((_, _) => gate.Task, maxConcurrency: 2).GetAsyncEnumerator();
+        Task<bool> move = results.MoveNextAsync().AsTask();
+
+        // The open gates let the source complete synchronously, so the reads have happened by the time
+        // MoveNextAsync returns: two, one per slot.
+        Assert.Equal(2, source.Read);
+        gate.SetResult(0);
+        await move.WaitAsync(Guard);
+    }
+
+    [Fact]
+    public async Task AsyncSource_ResultsAreYielded_WhileTheSourceIsSlow()
+    {
+        var source = new Source(3);
+        source.Gates[0].SetResult();   // item 0 arrives at once; item 1 never does until we say so
+
+        await using var results = source.Items()
+            .SelectConcurrentAsync((i, _) => Task.FromResult(i), maxConcurrency: 4, preserveOrder: false)
+            .GetAsyncEnumerator();
+
+        Assert.True(await results.MoveNextAsync().AsTask().WaitAsync(Guard));
+        Assert.Equal(0, results.Current);
+
+        source.Gates[1].SetResult();
+        source.Gates[2].SetResult();
+        Assert.True(await results.MoveNextAsync().AsTask().WaitAsync(Guard));
+        Assert.True(await results.MoveNextAsync().AsTask().WaitAsync(Guard));
+        Assert.False(await results.MoveNextAsync().AsTask().WaitAsync(Guard));
+    }
+
+    [Fact]
+    public async Task AsyncSource_Unordered_YieldsInCompletionOrder()
+    {
+        var source = new Source(2);
+        source.OpenAll();
+        var gates = Gates(2);
+
+        await using var results = source.Items()
+            .SelectConcurrentAsync((i, _) => gates[i].Task, maxConcurrency: 2, preserveOrder: false)
+            .GetAsyncEnumerator();
+        Task<bool> move = results.MoveNextAsync().AsTask();
+        gates[1].SetResult(1);
+
+        Assert.True(await move.WaitAsync(Guard));
+        Assert.Equal(1, results.Current);
+        gates[0].SetResult(0);
+        Assert.True(await results.MoveNextAsync().AsTask().WaitAsync(Guard));
+        Assert.Equal(0, results.Current);
+    }
+
+    [Fact]
+    public async Task AsyncSource_Break_CancelsTheSourceAndTheItems_AndDisposesTheSource()
+    {
+        var source = new Source(5);
+        source.Gates[0].SetResult();
+        source.Gates[1].SetResult();   // items 2.. never arrive: the source is waiting when we break
+        int ended = 0;
+
+        await foreach (int result in source.Items().SelectConcurrentAsync(async (i, ct) =>
+        {
+            try
+            {
+                if (i > 0)
+                {
+                    await Task.Delay(Timeout.Infinite, ct);
+                }
+                return i;
+            }
+            finally
+            {
+                Interlocked.Increment(ref ended);
+            }
+        }, maxConcurrency: 3).WithCancellation(default))
+        {
+            break;
+        }
+
+        Assert.Equal(2, ended);
+        Assert.True(source.Disposed);
+        Assert.True(source.SawCancellation);
+    }
+
+    [Fact]
+    public async Task AsyncSource_SourceFailure_IsThrown_AndTheItemsAreCancelled()
+    {
+        bool itemEnded = false;
+
+        async IAsyncEnumerable<int> Failing()
+        {
+            yield return 1;
+            await Task.Delay(10);
+            throw new Boom();
+        }
+
+        await Assert.ThrowsAsync<Boom>(async () =>
+        {
+            await foreach (int _ in Failing().SelectConcurrentAsync(async (i, ct) =>
+            {
+                try
+                {
+                    await Task.Delay(Timeout.Infinite, ct);
+                    return i;
+                }
+                finally
+                {
+                    itemEnded = true;
+                }
+            }, maxConcurrency: 2))
+            {
+            }
+        }).WaitAsync(Guard);
+
+        Assert.True(itemEnded);
+    }
+
+    [Fact]
+    public async Task AsyncSource_OperationFailure_IsThrown_AndTheSourceIsDisposed()
+    {
+        var source = new Source(5);
+        source.OpenAll();
+
+        await Assert.ThrowsAsync<Boom>(async () =>
+        {
+            await foreach (int _ in source.Items().SelectConcurrentAsync<int, int>((i, _) =>
+                i == 2 ? Task.FromException<int>(new Boom()) : Task.FromResult(i), maxConcurrency: 2))
+            {
+            }
+        }).WaitAsync(Guard);
+
+        Assert.True(source.Disposed);
+    }
+
+    [Fact]
+    public async Task AsyncSource_Cancellation_IsReportedWithTheCallersToken()
+    {
+        var source = new Source(5);   // no gate open: the enumeration waits on the source
+        using var cts = new CancellationTokenSource();
+        Task enumerate = Task.Run(async () =>
+        {
+            await foreach (int _ in source.Items()
+                .SelectConcurrentAsync((i, _) => Task.FromResult(i), maxConcurrency: 2)
+                .WithCancellation(cts.Token))
+            {
+            }
+        });
+        await Task.Delay(50);
+
+        cts.Cancel();
+
+        var exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => enumerate.WaitAsync(Guard));
+        Assert.Equal(cts.Token, exception.CancellationToken);
+        Assert.True(source.Disposed);
+    }
+
+    [Fact]
+    public async Task AsyncSource_WorksWithAChannel()
+    {
+        var channel = Channel.CreateUnbounded<int>();
+        for (int i = 0; i < 5; i++)
+        {
+            channel.Writer.TryWrite(i);
+        }
+        channel.Writer.Complete();
+
+        List<int> results = await channel.Reader.ReadAllAsync()
+            .SelectConcurrentAsync((i, _) => Task.FromResult(i + 1), maxConcurrency: 2)
+            .ToListAsync().WaitAsync(Guard);
+
+        Assert.Equal([1, 2, 3, 4, 5], results);
+    }
+
+    [Fact]
+    public void AsyncSource_InvalidArguments_Throw()
+    {
+        IAsyncEnumerable<int> source = new Source(1).Items();
+        Assert.Throws<ArgumentOutOfRangeException>(() => source.SelectConcurrentAsync((i, _) => Task.FromResult(i), 0));
+        Assert.Throws<ArgumentNullException>(() => source.SelectConcurrentAsync<int, int>(null!, 1));
+        Assert.Throws<ArgumentNullException>(() => ((IAsyncEnumerable<int>)null!).SelectConcurrentAsync((i, _) => Task.FromResult(i), 1));
     }
 
     private static void InterlockedMax(ref int target, int value)

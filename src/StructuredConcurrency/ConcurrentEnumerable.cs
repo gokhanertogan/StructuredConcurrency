@@ -39,6 +39,43 @@ public static class ConcurrentEnumerable
         return SelectCore(source, selector, maxConcurrency, preserveOrder);
     }
 
+    /// <summary>
+    /// Runs <paramref name="selector"/> for the items of an asynchronous stream, at most
+    /// <paramref name="maxConcurrency"/> at a time, and yields each result as soon as it can.
+    /// </summary>
+    /// <typeparam name="TSource">The type of the items.</typeparam>
+    /// <typeparam name="TResult">The type of the results.</typeparam>
+    /// <param name="source">
+    /// The items, such as rows from a database, pages from an API or a channel's <c>ReadAllAsync()</c>. They are read
+    /// only as slots free up, and the source receives the enumeration's cancellation.
+    /// </param>
+    /// <param name="selector">The operation to run for each item.</param>
+    /// <param name="maxConcurrency">The maximum number of operations that run at the same time; at least 1.</param>
+    /// <param name="preserveOrder">
+    /// <see langword="true"/> to yield results in input order; a slow item then holds back the results after it, and
+    /// it counts towards the limit until it is yielded. <see langword="false"/> to yield them as they complete.
+    /// </param>
+    /// <returns>
+    /// The results. Nothing is read or started until the sequence is enumerated. The first failure, of an operation
+    /// or of the source, is thrown from the enumeration. When enumeration ends for any reason, the operations still
+    /// running are cancelled and awaited, and the source is disposed, before it returns.
+    /// </returns>
+    /// <remarks>
+    /// A source that ignores its cancellation token can't be stopped in the middle of a read, and it can't be disposed
+    /// during one: ending the enumeration then waits for the read in progress to finish.
+    /// </remarks>
+    public static IAsyncEnumerable<TResult> SelectConcurrentAsync<TSource, TResult>(
+        this IAsyncEnumerable<TSource> source,
+        Func<TSource, CancellationToken, Task<TResult>> selector,
+        int maxConcurrency,
+        bool preserveOrder = true)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(selector);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxConcurrency, 1);
+        return SelectCore(source, selector, maxConcurrency, preserveOrder);
+    }
+
     private static async IAsyncEnumerable<TResult> SelectCore<TSource, TResult>(
         IEnumerable<TSource> source,
         Func<TSource, CancellationToken, Task<TResult>> selector,
@@ -83,17 +120,117 @@ public static class ConcurrentEnumerable
         finally
         {
             cts.Cancel();
-            foreach (Task<TResult> task in running)
+            await AwaitQuietlyAsync(running).ConfigureAwait(false);
+        }
+    }
+
+    private static async IAsyncEnumerable<TResult> SelectCore<TSource, TResult>(
+        IAsyncEnumerable<TSource> source,
+        Func<TSource, CancellationToken, Task<TResult>> selector,
+        int maxConcurrency,
+        bool preserveOrder,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        // In input order, so the first one is the next result when order is preserved.
+        var running = new List<Task<TResult>>(maxConcurrency);
+
+        // The source gets the same token as the operations, so ending the enumeration stops it reading too.
+        IAsyncEnumerator<TSource> items = source.GetAsyncEnumerator(cts.Token);
+        Task<bool>? moving = null;   // the source's MoveNextAsync while it is in flight
+        bool more = true;
+        try
+        {
+            while (true)
             {
-                try
+                // Read items while there are free slots, as far as the source has them ready.
+                while (more && running.Count < maxConcurrency && !cts.IsCancellationRequested)
                 {
-                    await task.ConfigureAwait(false);
+                    if (moving is null)
+                    {
+                        // Most sources (a channel with items queued, a buffered reader) complete synchronously: only
+                        // allocate a task for a read that has to wait.
+                        ValueTask<bool> read = items.MoveNextAsync();
+                        if (!read.IsCompleted)
+                        {
+                            moving = read.AsTask();
+                            break;
+                        }
+                        more = read.Result;   // rethrows the source's failure, if any
+                    }
+                    else if (moving.IsCompleted)
+                    {
+                        more = await moving.ConfigureAwait(false);
+                        moving = null;
+                    }
+                    else
+                    {
+                        break;
+                    }
+
+                    if (more)
+                    {
+                        running.Add(Start(selector, items.Current, cts.Token));
+                    }
                 }
-                catch
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (TryPick(running, preserveOrder) is Task<TResult> next)
                 {
-                    // The enumeration is already ending: with the first failure, a break, or cancellation. What the
-                    // cancelled operations end with is no longer of interest.
+                    running.Remove(next);
+                    if (!next.IsCompletedSuccessfully && cancellationToken.IsCancellationRequested)
+                    {
+                        // Report the caller's cancellation rather than the operation's reaction to it.
+                        cancellationToken.ThrowIfCancellationRequested();
+                    }
+                    yield return await next.ConfigureAwait(false);
+                    continue;
                 }
+                if (running.Count == 0 && !more)
+                {
+                    yield break;
+                }
+
+                // Wait for an operation to complete or, when a slot is free, for the source's next item.
+                var waits = new List<Task>(running.Count + 1);
+                waits.AddRange(running.Where(task => !task.IsCompleted));
+                if (moving is not null)
+                {
+                    waits.Add(moving);
+                }
+                if (waits.Count > 0)
+                {
+                    await Task.WhenAny(waits).ConfigureAwait(false);
+                }
+            }
+        }
+        finally
+        {
+            cts.Cancel();
+            await AwaitQuietlyAsync(running).ConfigureAwait(false);
+
+            // An enumerator can't be disposed while a MoveNextAsync is in flight.
+            if (moving is not null)
+            {
+                await ((Task)moving).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            }
+            await items.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    private static async Task AwaitQuietlyAsync<TResult>(List<Task<TResult>> running)
+    {
+        foreach (Task<TResult> task in running)
+        {
+            try
+            {
+                await task.ConfigureAwait(false);
+            }
+            catch
+            {
+                // The enumeration is already ending: with the first failure, a break, or cancellation. What the
+                // cancelled operations end with is no longer of interest.
             }
         }
     }
@@ -104,19 +241,7 @@ public static class ConcurrentEnumerable
     {
         while (true)
         {
-            Task<TResult>? pick = null;
-            foreach (Task<TResult> task in running)
-            {
-                if (task.IsCompleted && (!task.IsCompletedSuccessfully || !preserveOrder || task == running[0]))
-                {
-                    pick = task;
-                    if (!task.IsCompletedSuccessfully)
-                    {
-                        break;
-                    }
-                }
-            }
-            if (pick is not null)
+            if (TryPick(running, preserveOrder) is Task<TResult> pick)
             {
                 return pick;
             }
@@ -129,6 +254,24 @@ public static class ConcurrentEnumerable
                 await Task.WhenAny(pending).ConfigureAwait(false);
             }
         }
+    }
+
+    // The result that can be yielded now, if any; see NextAsync.
+    private static Task<TResult>? TryPick<TResult>(List<Task<TResult>> running, bool preserveOrder)
+    {
+        Task<TResult>? pick = null;
+        foreach (Task<TResult> task in running)
+        {
+            if (task.IsCompleted && (!task.IsCompletedSuccessfully || !preserveOrder || task == running[0]))
+            {
+                pick = task;
+                if (!task.IsCompletedSuccessfully)
+                {
+                    break;
+                }
+            }
+        }
+        return pick;
     }
 
     private static Task<TResult> Start<TSource, TResult>(
