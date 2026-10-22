@@ -10,10 +10,11 @@
     <IsAotCompatible>true</IsAotCompatible>
 
     <PackageId>StructuredConcurrency</PackageId>
-    <Version>0.2.0</Version>
+    <Version>0.2.1</Version>
     <Authors>Gokhan Ertogan</Authors>
-    <Description>Structured concurrency for .NET: child tasks run inside a scope that completes only when all of them have finished, and the first failure cancels the rest.</Description>
-    <PackageTags>async;tasks;structured-concurrency;cancellation;taskgroup</PackageTags>
+    <Title>StructuredConcurrency: TaskGroup and Promise.all / Promise.any for C#</Title>
+    <Description>Structured concurrency for C# and .NET. Run tasks in parallel in a TaskGroup: the first failure cancels the rest, no task outlives the group, and you get the real error instead of a TaskCanceledException. Includes C# equivalents of JavaScript's Promise.all, Promise.any and Promise.allSettled (TaskGroup.AllAsync, AnyAsync and AllSettledAsync).</Description>
+    <PackageTags>async;await;task;tasks;taskgroup;structured-concurrency;concurrency;parallel;cancellation;cancellationtoken;whenall;whenany;promise;promise-all;promise-any;allsettled;fail-fast;errgroup</PackageTags>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <Copyright>Copyright (c) 2026 Gokhan Ertogan</Copyright>

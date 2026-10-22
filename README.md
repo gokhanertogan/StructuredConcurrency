@@ -1,14 +1,68 @@
-# StructuredConcurrency
+# StructuredConcurrency: TaskGroup and Promise.all / Promise.any for C# and .NET
 
-Structured concurrency for .NET. Child tasks run inside a scope that completes only after all of them have finished, and the first failure cancels the rest.
+[![NuGet](https://img.shields.io/nuget/v/StructuredConcurrency.svg)](https://www.nuget.org/packages/StructuredConcurrency)
+[![Downloads](https://img.shields.io/nuget/dt/StructuredConcurrency.svg)](https://www.nuget.org/packages/StructuredConcurrency)
+[![CI](https://github.com/gokhanertogan/StructuredConcurrency/actions/workflows/ci.yml/badge.svg)](https://github.com/gokhanertogan/StructuredConcurrency/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+**Structured concurrency for C#.** Run tasks in parallel inside a `TaskGroup`. The first failure cancels the other tasks, no task keeps running after the group returns, and you get the real error back instead of a `TaskCanceledException`. It includes C# versions of JavaScript's `Promise.all`, `Promise.any` and `Promise.allSettled`, and the same model as Python's `asyncio.TaskGroup`, Kotlin's `coroutineScope`, Swift's task groups, Java's `StructuredTaskScope` and Go's `errgroup`.
 
 ```
 dotnet add package StructuredConcurrency
 ```
 
-## Why
+## Promise.all, Promise.any and Promise.allSettled in C#
 
-Running calls in parallel with `Task.WhenAll` or a hand-written `CancellationTokenSource` goes wrong in quiet ways. Take a request that calls three services, where one fails after 300 ms and the other two take 1.5 s and 2 s:
+If you know JavaScript promises, you already know the API. Unlike JavaScript, the tasks that are no longer needed are actually cancelled.
+
+**`Promise.all` → `TaskGroup.AllAsync`.** Run tasks in parallel and get all results; the first failure cancels the rest.
+
+```js
+// JavaScript
+const [user, orders] = await Promise.all([getUser(id), getOrders(id)]);
+```
+
+```csharp
+// C#
+var (user, orders) = await TaskGroup.AllAsync(
+    ct => GetUserAsync(id, ct),
+    ct => GetOrdersAsync(id, ct));
+```
+
+**`Promise.any` → `TaskGroup.AnyAsync`.** Take the first task that succeeds; the others are cancelled.
+
+```js
+// JavaScript
+const data = await Promise.any(mirrors.map(m => m.download(path)));
+```
+
+```csharp
+// C#
+string data = await TaskGroup.AnyAsync(mirrors, (mirror, ct) => mirror.DownloadAsync(path, ct));
+```
+
+**`Promise.allSettled` → `TaskGroup.AllSettledAsync`.** Run every task to completion and look at each outcome.
+
+```js
+// JavaScript
+const results = await Promise.allSettled(orders.map(o => charge(o)));
+```
+
+```csharp
+// C#
+TaskOutcome<Receipt>[] results = await TaskGroup.AllSettledAsync(orders, (order, ct) => ChargeAsync(order, ct));
+```
+
+| JavaScript | StructuredConcurrency | Built-in .NET, and what it doesn't do |
+| --- | --- | --- |
+| `Promise.all` | `TaskGroup.AllAsync` | `Task.WhenAll` doesn't cancel the other tasks when one fails |
+| `Promise.any` | `TaskGroup.AnyAsync` | No equivalent. `Task.WhenAny` returns the first task to complete, even if it failed |
+| `Promise.allSettled` | `TaskGroup.AllSettledAsync` | `Task.WhenAll`, then inspect each task by hand |
+| `Promise.race` | Not needed | `Task.WhenAny` |
+
+## Why: the bugs in Task.WhenAll and Task.WhenAny code
+
+Take a request that calls three services in parallel. One fails after 300 ms, and the other two take 1.5 s and 2 s:
 
 | Approach | Caller gets the error at | Error the caller sees | Work left running |
 | --- | --- | --- | --- |
@@ -17,58 +71,9 @@ Running calls in parallel with `Task.WhenAll` or a hand-written `CancellationTok
 | Hand-written `CancellationTokenSource` | 310 ms | A task was canceled. | None |
 | `TaskGroup` | 320 ms | OrderService is down | None |
 
-The numbers come from [`samples/BeforeAfter`](samples/BeforeAfter/Program.cs), which runs the same request all four ways.
+The hand-written version cancels correctly but reports the wrong error: it awaits a task that was cancelled *because* another one failed. See [`samples/BeforeAfter`](samples/BeforeAfter/Program.cs).
 
-## Usage
-
-```csharp
-using StructuredConcurrency;
-
-var (user, orders) = await TaskGroup.RunAsync(async group =>
-{
-    Task<User> user = group.Run(ct => api.GetUserAsync(id, ct));
-    Task<Order[]> orders = group.Run(ct => api.GetOrdersAsync(id, ct));
-    return (await user, await orders);
-}, cancellationToken);
-```
-
-Each child receives the group's `CancellationToken`. If either call fails, the other is cancelled. `RunAsync` completes only after both have stopped, and `await` throws the original failure.
-
-A dynamic number of children works the same way:
-
-```csharp
-await TaskGroup.RunAsync(async group =>
-{
-    foreach (var url in urls)
-    {
-        group.Run(ct => DownloadAsync(url, ct));
-    }
-}, cancellationToken);
-```
-
-## Policies
-
-Three one-shot helpers cover the common shapes. They are named after JavaScript's `Promise` combinators and keep the same guarantee: none of the operations outlives the call.
-
-```csharp
-// All must succeed. The first failure cancels the rest (Promise.all).
-var (user, orders) = await TaskGroup.AllAsync(
-    ct => api.GetUserAsync(id, ct),
-    ct => api.GetOrdersAsync(id, ct),
-    cancellationToken);
-
-// The first success wins and the rest are cancelled (Promise.any).
-string data = await TaskGroup.AnyAsync(mirrors, (mirror, ct) => mirror.DownloadAsync(path, ct), cancellationToken);
-
-// Every operation runs to completion, and each outcome is reported (Promise.allSettled).
-TaskOutcome<Receipt>[] outcomes = await TaskGroup.AllSettledAsync(orders, (order, ct) => ChargeAsync(order, ct), cancellationToken);
-```
-
-Each helper takes either two or three operations, which may return different types (and return a tuple), or a collection of items with one operation (and return an array in input order). If every operation passed to `AnyAsync` fails, it throws an `AggregateException` with all failures in input order.
-
-### `Task.WhenAny` is not `Promise.any`
-
-`Task.WhenAny` returns the first task to *complete*, even if that task failed, and it doesn't stop the others. Take three mirrors where A fails after 100 ms, B succeeds after 300 ms and C succeeds after 2 s:
+`Task.WhenAny` has the opposite problem. With three mirrors, where A fails after 100 ms, B succeeds after 300 ms and C succeeds after 2 s:
 
 | Approach | Caller gets | At | Work left running |
 | --- | --- | --- | --- |
@@ -78,6 +83,36 @@ Each helper takes either two or three operations, which may return different typ
 
 See [`samples/AnyVsWhenAny`](samples/AnyVsWhenAny/Program.cs).
 
+## TaskGroup: structured concurrency in C#
+
+For anything beyond the three helpers, open a group and start children in it:
+
+```csharp
+using StructuredConcurrency;
+
+await TaskGroup.RunAsync(async group =>
+{
+    foreach (var url in urls)
+    {
+        group.Run(ct => DownloadAsync(url, ct));
+    }
+}, cancellationToken);
+// Every download has finished here, or the first failure was thrown after the rest were cancelled.
+```
+
+Each child receives the group's `CancellationToken`. Children can start more children, and groups can be nested.
+
+### Coming from another language
+
+| Language | API | In C# |
+| --- | --- | --- |
+| Python 3.11+ | `asyncio.TaskGroup` | `TaskGroup.RunAsync` |
+| Kotlin | `coroutineScope { }` | `TaskGroup.RunAsync` |
+| Kotlin | `supervisorScope { }` | `TaskGroup.RunAsync` with `new TaskGroupOptions { CancelOnFailure = false }` |
+| Swift | `withThrowingTaskGroup` | `TaskGroup.RunAsync` |
+| Java 21+ | `StructuredTaskScope` | `TaskGroup.RunAsync`, `TaskGroup.AnyAsync` |
+| Go | `errgroup.WithContext` | `TaskGroup.RunAsync`, `TaskGroup.AllAsync` |
+
 ## Guarantees
 
 1. **Scope.** `RunAsync` completes only after the body and every child have completed, even when the body throws.
@@ -86,11 +121,31 @@ See [`samples/AnyVsWhenAny`](samples/AnyVsWhenAny/Program.cs).
 4. **Errors surface as `await` expects.** `await` rethrows the first failure. The returned task's `Exception` holds every failure in the order they occurred.
 5. **Cancellations caused by the group are not failures.** An `OperationCanceledException` thrown after the group was cancelled is dropped, so you see why the group stopped. A child's own cancellation, such as an `HttpClient` timeout, is reported as a failure.
 
-## Options and control
+## FAQ
 
-- `group.Cancel()` stops the remaining children without counting as a failure, for example once you have the answer you need.
-- `new TaskGroupOptions { CancelOnFailure = false }` puts the group in supervisor mode: every child runs to completion and all failures are reported at the end.
-- `group.Run` invokes the delegate on the calling thread, like calling an async method. It does not offload to the thread pool, so wrap CPU-bound work in `Task.Run`.
+### How do I cancel the other tasks when one task fails in C#?
+
+Use `TaskGroup.AllAsync` for a fixed set of tasks, or `TaskGroup.RunAsync` for a dynamic one. The first exception cancels the shared `CancellationToken`, and the call waits for the cancelled tasks to stop before it rethrows the original exception. `Task.WhenAll` can't do this, because it has no way to cancel tasks.
+
+### What is the C# equivalent of Promise.any?
+
+`TaskGroup.AnyAsync`. It returns the first successful result and cancels the rest. If every task fails, it throws an `AggregateException` with all the failures, the same as JavaScript's `AggregateError`. `Task.WhenAny` isn't an equivalent: it is `Promise.race`.
+
+### Why does Task.WhenAll wait for all tasks after one has failed?
+
+`Task.WhenAll` only observes tasks; it can't stop them. The tasks keep running until they finish, so the caller waits for work whose results are discarded. Pass the group's token to every task with `TaskGroup` and they stop at the first failure.
+
+### Can't I do this with a CancellationTokenSource?
+
+Yes, and TaskGroup uses one internally. Doing it by hand means cancelling on every failure, awaiting every task in a `finally`, and filtering out the `OperationCanceledException`s you caused. The table above shows the most common hand-written version reporting "A task was canceled." instead of the real error.
+
+### Does it run tasks on the thread pool?
+
+No. `group.Run` invokes the delegate on the calling thread, like calling an async method. Wrap CPU-bound work in `Task.Run`.
+
+### How do I stop the remaining tasks once I have the result I need?
+
+Call `group.Cancel()`. It cancels the remaining children without counting as a failure.
 
 ## Performance
 
@@ -109,7 +164,7 @@ When children do real asynchronous work, TaskGroup runs within the benchmark's n
 
 ## Status
 
-Version 0.2 adds `AllAsync`, `AnyAsync`, `AllSettledAsync` and `TaskOutcome<T>` to the 0.1 core (`RunAsync`, `Run`, `Cancel` and `TaskGroupOptions`). The API may change before 1.0.
+Version 0.2 includes `TaskGroup.RunAsync`, `Run`, `Cancel`, `TaskGroupOptions`, `AllAsync`, `AnyAsync`, `AllSettledAsync` and `TaskOutcome<T>`. The API may change before 1.0.
 
 Targets .NET 8 and later, and is trimming and NativeAOT compatible.
 
