@@ -1,0 +1,36 @@
+name: Release
+
+# Pushing a tag such as v0.2.0 tests, packs and publishes that version to nuget.org,
+# then creates a GitHub release with the packages attached.
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+      - run: dotnet test -c Release
+      - name: Check the tag matches the package version
+        run: |
+          version=$(dotnet msbuild src/StructuredConcurrency -getProperty:Version)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match the package version $version"
+            exit 1
+          fi
+      - run: dotnet pack src/StructuredConcurrency -c Release -o artifacts
+      # Also pushes the .snupkg symbols package next to each .nupkg.
+      - run: dotnet nuget push "artifacts/*.nupkg" --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+      - run: gh release create "$GITHUB_REF_NAME" artifacts/* --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
