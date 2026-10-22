@@ -295,6 +295,148 @@ public class ChannelTests
         await Assert.ThrowsAsync<Boom>(() => source.Reader.BroadcastAsync([target.Writer]));
         await Assert.ThrowsAsync<Boom>(() => target.Reader.Completion);
     }
+
+    [Fact]
+    public async Task Select_DefaultCase_ReturnsFalse_WhenEveryChannelHasCompleted()
+    {
+        var channel = Unbounded<int>();
+        channel.Writer.Complete();
+        int defaults = 0;
+
+        bool ran = await new ChannelSelect()
+            .Case(channel.Reader, (int _) => { })
+            .Default(() => defaults++)
+            .RunAsync().WaitAsync(Guard);
+
+        Assert.False(ran);
+        Assert.Equal(0, defaults);
+    }
+
+    [Fact]
+    public async Task Select_TimeoutCase_ReturnsFalse_WhenEveryChannelHasCompleted()
+    {
+        var channel = Unbounded<int>();
+        channel.Writer.Complete();
+        int timeouts = 0;
+
+        bool ran = await new ChannelSelect()
+            .Case(channel.Reader, (int _) => { })
+            .Timeout(TimeSpan.FromMinutes(5), () => timeouts++)
+            .RunAsync().WaitAsync(Guard);
+
+        Assert.False(ran);
+        Assert.Equal(0, timeouts);
+    }
+
+    [Fact]
+    public void Select_Timeout_RejectsValuesTaskDelayCannotWaitFor()
+    {
+        var select = new ChannelSelect();
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => select.Timeout(TimeSpan.FromMilliseconds(-2), () => { }));
+        Assert.Throws<ArgumentOutOfRangeException>(() => select.Timeout(TimeSpan.MaxValue, () => { }));
+        select.Timeout(Timeout.InfiniteTimeSpan, () => { });
+    }
+
+    [Fact]
+    public async Task Select_LongestTimeout_IsAcceptedByTaskDelay()
+    {
+        var channel = Unbounded<int>();
+        channel.Writer.TryWrite(1);
+        using var cts = new CancellationTokenSource();
+        var select = new ChannelSelect()
+            .Case(channel.Reader, (int _) => { })
+            .Timeout(TimeSpan.FromMilliseconds(uint.MaxValue - 1), () => { });
+
+        Assert.True(await select.RunAsync().WaitAsync(Guard));   // reads the item
+        Task<bool> waiting = select.RunAsync(cts.Token);         // has to wait, so starts the delay
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting.WaitAsync(Guard));
+    }
+
+    [Fact]
+    public async Task Broadcast_TargetClosedByItsConsumer_DoesNotStopTheOthers()
+    {
+        var source = Unbounded<int>();
+        var closed = Unbounded<int>();
+        var healthy = Unbounded<int>();
+        closed.Writer.Complete();
+        for (int i = 0; i < 5; i++)
+        {
+            source.Writer.TryWrite(i);
+        }
+        source.Writer.Complete();
+
+        await source.Reader.BroadcastAsync([closed.Writer, healthy.Writer]).WaitAsync(Guard);
+
+        Assert.Equal(Enumerable.Range(0, 5), await healthy.Reader.ReadAllAsync().ToListAsync());
+        Assert.True(healthy.Reader.Completion.IsCompletedSuccessfully);
+    }
+
+    [Fact]
+    public async Task Broadcast_EveryTargetClosed_StopsWithoutReadingFurther()
+    {
+        var source = Unbounded<int>();
+        var target = Unbounded<int>();
+        target.Writer.Complete();
+        source.Writer.TryWrite(1);
+        source.Writer.TryWrite(2);
+
+        await source.Reader.BroadcastAsync([target.Writer]).WaitAsync(Guard);
+
+        Assert.Equal(1, source.Reader.Count);
+    }
+
+    [Fact]
+    public async Task Broadcast_NullTarget_ThrowsBeforeReading()
+    {
+        var source = Unbounded<int>();
+        var target = Unbounded<int>();
+        source.Writer.TryWrite(1);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => source.Reader.BroadcastAsync([target.Writer, null!]));
+
+        Assert.Equal(1, source.Reader.Count);
+        Assert.False(target.Reader.Completion.IsCompleted);
+    }
+
+    [Fact]
+    public async Task Select_ChannelCompletedWithCancellation_Throws()
+    {
+        var channel = Unbounded<int>();
+        channel.Writer.Complete(new OperationCanceledException());
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            new ChannelSelect().Case(channel.Reader, (int _) => { }).RunAsync().WaitAsync(Guard));
+    }
+
+    [Fact]
+    public async Task Merge_ChannelCompletedWithCancellation_Throws()
+    {
+        var cancelled = Unbounded<int>();
+        var open = Unbounded<int>();
+        cancelled.Writer.Complete(new OperationCanceledException());
+        open.Writer.Complete();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => cancelled.Reader.MergeWith(open.Reader).ToListAsync().WaitAsync(Guard));
+    }
+
+    [Fact]
+    public async Task Broadcast_TargetCompletedWithCancellation_DoesNotStopTheOthers()
+    {
+        var source = Unbounded<int>();
+        var cancelled = Unbounded<int>();
+        var healthy = Unbounded<int>();
+        cancelled.Writer.Complete(new OperationCanceledException());
+        source.Writer.TryWrite(1);
+        source.Writer.TryWrite(2);
+        source.Writer.Complete();
+
+        await source.Reader.BroadcastAsync([cancelled.Writer, healthy.Writer]).WaitAsync(Guard);
+
+        Assert.Equal([1, 2], await healthy.Reader.ReadAllAsync().ToListAsync());
+    }
 }
 
 internal static class AsyncEnumerableTestExtensions

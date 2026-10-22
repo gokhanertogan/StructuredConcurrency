@@ -10,11 +10,11 @@
     <IsAotCompatible>true</IsAotCompatible>
 
     <PackageId>StructuredConcurrency</PackageId>
-    <Version>0.3.0</Version>
+    <Version>0.4.0</Version>
     <Authors>Gokhan Ertogan</Authors>
     <Title>StructuredConcurrency: TaskGroup and Promise.all / Promise.any for C#</Title>
-    <Description>Structured concurrency for C# and .NET. Run tasks in parallel in a TaskGroup: the first failure cancels the rest, no task outlives the group, and you get the real error instead of a TaskCanceledException. Includes C# equivalents of JavaScript's Promise.all, Promise.any and Promise.allSettled (TaskGroup.AllAsync, AnyAsync and AllSettledAsync), a concurrency limit, and Go's select for System.Threading.Channels.</Description>
-    <PackageTags>async;await;task;tasks;taskgroup;structured-concurrency;concurrency;parallel;cancellation;cancellationtoken;whenall;whenany;promise;promise-all;promise-any;allsettled;fail-fast;errgroup;semaphoreslim;max-concurrency;throttling;channels;go;select;fan-in;fan-out</PackageTags>
+    <Description>Structured concurrency for C# and .NET. Run tasks in parallel in a TaskGroup: the first failure cancels the rest, no task outlives the group, and you get the real error instead of a TaskCanceledException. Includes C# equivalents of JavaScript's Promise.all, Promise.any and Promise.allSettled (TaskGroup.AllAsync, AnyAsync and AllSettledAsync), a concurrency limit, timeouts that cancel the work (Kotlin's withTimeout), bounded parallel streams of results, Go's singleflight, and Go's select for System.Threading.Channels.</Description>
+    <PackageTags>async;await;task;tasks;taskgroup;structured-concurrency;concurrency;parallel;cancellation;cancellationtoken;whenall;whenany;promise;promise-all;promise-any;allsettled;fail-fast;errgroup;semaphoreslim;max-concurrency;throttling;channels;go;select;fan-in;fan-out;timeout;withtimeout;singleflight;cache-stampede;as-completed;iasyncenumerable</PackageTags>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <Copyright>Copyright (c) 2026 Gokhan Ertogan</Copyright>

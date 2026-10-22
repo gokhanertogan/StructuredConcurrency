@@ -35,6 +35,8 @@ public static class ChannelReaderExtensions
         ChannelReader<T>[] readers,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
+        // Like ChannelSelect.RunAsync, but the waits are kept across items for the whole enumeration rather than
+        // started again for every item, since this is a hot path.
         var waits = new Task<bool>?[readers.Length];
         using var waitCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         try
@@ -56,7 +58,7 @@ public static class ChannelReaderExtensions
                         found = true;
                         break;
                     }
-                    if (reader.Completion.IsFaulted)
+                    if (reader.Completion.IsCompleted && !reader.Completion.IsCompletedSuccessfully)
                     {
                         reader.Completion.GetAwaiter().GetResult();
                     }
@@ -112,9 +114,12 @@ public static class ChannelReaderExtensions
     /// <param name="cancellationToken">Stops copying.</param>
     /// <returns>
     /// A task that completes when the source has completed and every item has been written to every target. Writes
-    /// wait for space, so the slowest target sets the pace. If the source fails or the copy is cancelled, the targets
-    /// are completed with that exception and the task rethrows it. Run it as a child of a <see cref="TaskGroup"/>.
+    /// wait for space, so the slowest target sets the pace. A target that its consumer completes early stops receiving
+    /// items while the others carry on; once every target has been completed this way, the copy ends without reading
+    /// further. If the source fails or the copy is cancelled, the targets are completed with that exception and the
+    /// task rethrows it. Run it as a child of a <see cref="TaskGroup"/>.
     /// </returns>
+    /// <exception cref="ArgumentException"><paramref name="targets"/> contains <see langword="null"/>.</exception>
     public static async Task BroadcastAsync<T>(
         this ChannelReader<T> source,
         IReadOnlyList<ChannelWriter<T>> targets,
@@ -122,27 +127,47 @@ public static class ChannelReaderExtensions
     {
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(targets);
+        var open = new List<ChannelWriter<T>>(targets.Count);
+        foreach (ChannelWriter<T> target in targets)
+        {
+            open.Add(target ?? throw new ArgumentException("A target channel is null.", nameof(targets)));
+        }
 
         try
         {
-            await foreach (T item in source.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+            while (open.Count > 0 && await source.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                foreach (ChannelWriter<T> target in targets)
+                while (open.Count > 0 && source.TryRead(out T? item))
                 {
-                    await target.WriteAsync(item, cancellationToken).ConfigureAwait(false);
+                    for (int i = 0; i < open.Count;)
+                    {
+                        try
+                        {
+                            await open[i].WriteAsync(item, cancellationToken).ConfigureAwait(false);
+                            i++;
+                        }
+                        catch (Exception exception) when (
+                            exception is ChannelClosedException ||
+                            (exception is OperationCanceledException && !cancellationToken.IsCancellationRequested))
+                        {
+                            // Its consumer completed it (a target completed with an OperationCanceledException rethrows
+                            // that rather than ChannelClosedException): that target is done, not the broadcast.
+                            open.RemoveAt(i);
+                        }
+                    }
                 }
             }
         }
         catch (Exception exception)
         {
-            foreach (ChannelWriter<T> target in targets)
+            foreach (ChannelWriter<T> target in open)
             {
                 target.TryComplete(exception);
             }
             throw;
         }
 
-        foreach (ChannelWriter<T> target in targets)
+        foreach (ChannelWriter<T> target in open)
         {
             target.TryComplete();
         }

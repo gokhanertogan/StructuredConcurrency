@@ -27,7 +27,7 @@ public sealed partial class TaskGroup
         {
             var group = (TaskGroup)state!;
             group.OnCompleted(task, isBody: false);
-            if (group.TryTakeNext(out Task? next))
+            if (group.TryTakeNext(out QueuedChild? next))
             {
                 group.Pump(next);
             }
@@ -186,34 +186,16 @@ public sealed partial class TaskGroup
             return Task.FromCanceled(CancellationToken);
         }
 
-        if (_queue is null)
+        if (_queue is not null)
         {
-            Task task = Invoke(work, CancellationToken);
-            Track(task, isBody: false);
-            return task;
+            var child = new QueuedChild<VoidResult>(work);
+            RunLimited(child);
+            return child.Task;
         }
 
-        QueuedVoidChild? queued = null;
-        lock (_queue)
-        {
-            if (_running < _maxConcurrency)
-            {
-                _running++;
-            }
-            else
-            {
-                queued = new QueuedVoidChild(work);
-                _queue.Enqueue(queued);
-            }
-        }
-        if (queued is not null)
-        {
-            return queued.Task;
-        }
-
-        Task started = Invoke(work, CancellationToken);
-        Pump(started);
-        return started;
+        Task task = Invoke(work, CancellationToken);
+        Track(task, isBody: false);
+        return task;
     }
 
     /// <summary>Starts a child that the group observes and waits for.</summary>
@@ -232,34 +214,16 @@ public sealed partial class TaskGroup
             return Task.FromCanceled<T>(CancellationToken);
         }
 
-        if (_queue is null)
+        if (_queue is not null)
         {
-            Task<T> task = Invoke(work, CancellationToken);
-            Track(task, isBody: false);
-            return task;
+            var child = new QueuedChild<T>(work);
+            RunLimited(child);
+            return child.TypedTask;
         }
 
-        QueuedChild<T>? queued = null;
-        lock (_queue)
-        {
-            if (_running < _maxConcurrency)
-            {
-                _running++;
-            }
-            else
-            {
-                queued = new QueuedChild<T>(work);
-                _queue.Enqueue(queued);
-            }
-        }
-        if (queued is not null)
-        {
-            return queued.TypedTask;
-        }
-
-        Task<T> started = Invoke(work, CancellationToken);
-        Pump(started);
-        return started;
+        Task<T> task = Invoke(work, CancellationToken);
+        Track(task, isBody: false);
+        return task;
     }
 
     /// <summary>
@@ -332,12 +296,49 @@ public sealed partial class TaskGroup
         }
     }
 
-    // Called with a concurrency slot held by `task`. When a child completes synchronously, the next queued child
-    // starts in this loop rather than recursively, so a long queue of synchronous work can't overflow the stack.
-    private void Pump(Task task)
+    // Starts the child if a slot is free, otherwise queues it.
+    private void RunLimited(QueuedChild child)
     {
-        while (true)
+        bool start;
+        lock (_queue!)
         {
+            start = _running < _maxConcurrency;
+            if (start)
+            {
+                _running++;
+            }
+            else
+            {
+                _queue.Enqueue(child);
+            }
+        }
+
+        if (start)
+        {
+            Pump(child);
+        }
+        else if (CancellationToken.IsCancellationRequested)
+        {
+            // The group was cancelled after TryAddChild, and its DrainQueue may have run before the child was queued.
+            DrainQueue();
+        }
+    }
+
+    // Called with a concurrency slot held for `child`. When a child completes synchronously, the next queued child
+    // starts in this loop rather than recursively, so a long queue of synchronous work can't overflow the stack.
+    private void Pump(QueuedChild first)
+    {
+        QueuedChild? child = first;
+        do
+        {
+            if (CancellationToken.IsCancellationRequested)
+            {
+                child.Cancel(CancellationToken);
+                OnCompleted(child.Task, isBody: false);
+                continue;
+            }
+
+            Task task = child.Start(CancellationToken);
             if (!task.IsCompleted)
             {
                 task.ContinueWith(
@@ -350,40 +351,21 @@ public sealed partial class TaskGroup
             }
 
             OnCompleted(task, isBody: false);
-            if (!TryTakeNext(out Task? next))
-            {
-                return;
-            }
-            task = next;
         }
+        while (TryTakeNext(out child));
     }
 
-    // Hands the caller's slot to the next queued child and starts it, or frees the slot when the queue is empty.
-    private bool TryTakeNext([NotNullWhen(true)] out Task? next)
+    // Hands the caller's slot to the next queued child, or frees the slot when the queue is empty.
+    private bool TryTakeNext([NotNullWhen(true)] out QueuedChild? next)
     {
-        while (true)
+        lock (_queue!)
         {
-            QueuedChild item;
-            lock (_queue!)
+            if (_queue.TryDequeue(out next))
             {
-                if (_queue.Count == 0)
-                {
-                    _running--;
-                    next = null;
-                    return false;
-                }
-                item = _queue.Dequeue();
+                return true;
             }
-
-            if (CancellationToken.IsCancellationRequested)
-            {
-                item.Cancel(CancellationToken);
-                OnCompleted(item.Task, isBody: false);
-                continue;
-            }
-
-            next = item.Start(CancellationToken);
-            return true;
+            _running--;
+            return false;
         }
     }
 
@@ -577,64 +559,30 @@ public sealed partial class TaskGroup
     {
     }
 
-    // Work waiting for a concurrency slot. Run returns Task, which mirrors the work once it has started and completed.
+    // A child of a group with a concurrency limit. It may wait in the queue and start later from another child's
+    // completion, so it keeps the ExecutionContext Run was called in. Run returns a task that mirrors the work once it
+    // has run. It doesn't go back to the caller's SynchronizationContext: if that context were blocked waiting for the
+    // group, the child could never start.
     private abstract class QueuedChild
     {
         public abstract Task Task { get; }
 
-        // Invokes the work and returns its task, which the group tracks like any other child.
+        // Invokes the work and returns the task for the group to track.
         public abstract Task Start(CancellationToken cancellationToken);
 
         public abstract void Cancel(CancellationToken cancellationToken);
     }
 
-    private sealed class QueuedVoidChild(Func<CancellationToken, Task> work) : QueuedChild
+    // T is VoidResult for work that returns a plain Task.
+    private sealed class QueuedChild<T>(Func<CancellationToken, Task> work) : QueuedChild
     {
-        private readonly TaskCompletionSource _mirror = new();
+        private readonly ExecutionContext? _executionContext = ExecutionContext.Capture();
 
-        public override Task Task => _mirror.Task;
+        // Continuations run asynchronously, so code awaiting the child never runs on the thread that holds its slot.
+        private readonly TaskCompletionSource<T> _mirror = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public override Task Start(CancellationToken cancellationToken)
-        {
-            Task task = Invoke(work, cancellationToken);
-            if (task.IsCompleted)
-            {
-                Mirror(task);
-            }
-            else
-            {
-                task.ContinueWith(
-                    static (task, state) => ((QueuedVoidChild)state!).Mirror(task),
-                    this,
-                    CancellationToken.None,
-                    TaskContinuationOptions.ExecuteSynchronously,
-                    TaskScheduler.Default);
-            }
-            return task;
-        }
-
-        public override void Cancel(CancellationToken cancellationToken) => _mirror.TrySetCanceled(cancellationToken);
-
-        private void Mirror(Task task)
-        {
-            if (task.IsCompletedSuccessfully)
-            {
-                _mirror.TrySetResult();
-            }
-            else if (task.IsCanceled)
-            {
-                _mirror.TrySetCanceled(CancellationTokenOf(task));
-            }
-            else
-            {
-                _mirror.TrySetException(task.Exception!.InnerExceptions);
-            }
-        }
-    }
-
-    private sealed class QueuedChild<T>(Func<CancellationToken, Task<T>> work) : QueuedChild
-    {
-        private readonly TaskCompletionSource<T> _mirror = new();
+        private CancellationToken _cancellationToken;
+        private Task? _started;
 
         public override Task Task => _mirror.Task;
 
@@ -642,7 +590,22 @@ public sealed partial class TaskGroup
 
         public override Task Start(CancellationToken cancellationToken)
         {
-            Task<T> task = Invoke(work, cancellationToken);
+            _cancellationToken = cancellationToken;
+            if (_executionContext is null)
+            {
+                return InvokeAndMirror();
+            }
+
+            ExecutionContext.Run(_executionContext, static state => ((QueuedChild<T>)state!).InvokeAndMirror(), this);
+            return _started!;
+        }
+
+        public override void Cancel(CancellationToken cancellationToken) => _mirror.TrySetCanceled(cancellationToken);
+
+        private Task InvokeAndMirror()
+        {
+            Task task = Invoke(work, _cancellationToken);
+            _started = task;
             if (task.IsCompleted)
             {
                 Mirror(task);
@@ -650,7 +613,7 @@ public sealed partial class TaskGroup
             else
             {
                 task.ContinueWith(
-                    static (task, state) => ((QueuedChild<T>)state!).Mirror((Task<T>)task),
+                    static (task, state) => ((QueuedChild<T>)state!).Mirror(task),
                     this,
                     CancellationToken.None,
                     TaskContinuationOptions.ExecuteSynchronously,
@@ -659,13 +622,11 @@ public sealed partial class TaskGroup
             return task;
         }
 
-        public override void Cancel(CancellationToken cancellationToken) => _mirror.TrySetCanceled(cancellationToken);
-
-        private void Mirror(Task<T> task)
+        private void Mirror(Task task)
         {
             if (task.IsCompletedSuccessfully)
             {
-                _mirror.TrySetResult(task.Result);
+                _mirror.TrySetResult(task is Task<T> typed ? typed.Result : default!);
             }
             else if (task.IsCanceled)
             {
@@ -674,11 +635,14 @@ public sealed partial class TaskGroup
             else
             {
                 _mirror.TrySetException(task.Exception!.InnerExceptions);
+
+                // The group reports the failure, so a caller that doesn't await the child must not see it as unobserved.
+                _ = _mirror.Task.Exception;
             }
         }
     }
 
-    private static CancellationToken CancellationTokenOf(Task canceledTask)
+    internal static CancellationToken CancellationTokenOf(Task canceledTask)
     {
         try
         {

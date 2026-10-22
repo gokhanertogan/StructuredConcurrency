@@ -1,5 +1,8 @@
 namespace StructuredConcurrency.Tests;
 
+// Some children use ConfigureAwait(false) on purpose, to run their continuations without the test's context.
+#pragma warning disable xUnit1030
+
 // Children are driven by TaskCompletionSources that each test completes in a chosen order; no test depends on timing.
 public class ConcurrencyLimitTests
 {
@@ -203,5 +206,113 @@ public class ConcurrencyLimitTests
             n % 2 == 0 ? Task.FromResult(n) : Task.FromException<int>(new Boom(n)), maxConcurrency: 2);
 
         Assert.Equal(new[] { true, false, true, false, true, false }, outcomes.Select(o => o.IsSuccess));
+    }
+
+    [Fact]
+    public async Task QueuedChild_RunsWithTheExecutionContextRunWasCalledIn()
+    {
+        var local = new AsyncLocal<int>();
+        var gate = new TaskCompletionSource();
+        var seen = new int[3];
+
+        Task run = TaskGroup.RunAsync(group =>
+        {
+            for (int i = 0; i < seen.Length; i++)
+            {
+                int id = i;
+                local.Value = id;
+                group.Run(async _ =>
+                {
+                    seen[id] = local.Value;
+                    await gate.Task;
+                });
+            }
+            return Task.CompletedTask;
+        }, Limit(1));
+
+        gate.SetResult();
+        await run;
+
+        Assert.Equal([0, 1, 2], seen);
+    }
+
+    [Fact]
+    public async Task CodeAwaitingAQueuedChild_DoesNotHoldUpTheNextOne()
+    {
+        var gate = new TaskCompletionSource();
+        var lastStarted = new ManualResetEventSlim();
+        bool lastStartedInTime = false;
+
+        Task run = TaskGroup.RunAsync(async group =>
+        {
+            _ = group.Run(_ => gate.Task);
+            Task queued = group.Run(_ => Task.CompletedTask);
+            _ = group.Run(_ =>
+            {
+                lastStarted.Set();
+                return Task.CompletedTask;
+            });
+
+            await queued.ConfigureAwait(false);
+
+            // Blocks the thread the awaited child completed on; the last child must still get its slot.
+            lastStartedInTime = lastStarted.Wait(TimeSpan.FromSeconds(10));
+        }, Limit(1));
+
+        // From a thread pool thread: the test's SynchronizationContext would stop continuations from running inline.
+        await Task.Run(gate.SetResult);
+        await run;
+
+        Assert.True(lastStartedInTime);
+    }
+
+    [Fact]
+    public async Task QueuedChildFailure_IsNotReportedAsUnobserved_WhenNotAwaited()
+    {
+        var unobserved = new List<Exception>();
+        EventHandler<UnobservedTaskExceptionEventArgs> handler = (_, e) =>
+        {
+            lock (unobserved)
+            {
+                unobserved.AddRange(e.Exception.InnerExceptions.OfType<Boom>().Where(boom => boom.Id == 4242));
+            }
+        };
+
+        TaskScheduler.UnobservedTaskException += handler;
+        try
+        {
+            await RunUnawaitedFailingChildren();
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+
+            Assert.Empty(unobserved);
+        }
+        finally
+        {
+            TaskScheduler.UnobservedTaskException -= handler;
+        }
+    }
+
+    // In its own method, so nothing in the test keeps the children's tasks alive when it collects garbage.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static async Task RunUnawaitedFailingChildren()
+    {
+        var gate = new TaskCompletionSource();
+        Task run = TaskGroup.RunAsync(group =>
+        {
+            for (int i = 0; i < 3; i++)
+            {
+                group.Run(async _ =>
+                {
+                    await gate.Task;
+                    throw new Boom(4242);
+                });
+            }
+            return Task.CompletedTask;
+        }, new TaskGroupOptions { MaxConcurrency = 1, CancelOnFailure = false });
+
+        gate.SetResult();
+        await Assert.ThrowsAsync<Boom>(() => run);
     }
 }

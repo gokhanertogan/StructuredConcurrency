@@ -49,13 +49,16 @@ public sealed class ChannelSelect
     /// Runs <paramref name="handler"/> if no channel has an item within <paramref name="after"/> of
     /// <see cref="RunAsync"/> being called, like Go's <c>case &lt;-time.After(d)</c>.
     /// </summary>
-    /// <param name="after">How long to wait for an item.</param>
+    /// <param name="after">
+    /// How long to wait for an item: up to about 49 days, or <see cref="System.Threading.Timeout.InfiniteTimeSpan"/>.
+    /// </param>
     /// <param name="handler">Runs when the time is up.</param>
     /// <returns>This instance, to add more cases.</returns>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="after"/> is negative or too long.</exception>
     public ChannelSelect Timeout(TimeSpan after, Func<Task> handler)
     {
         ArgumentNullException.ThrowIfNull(handler);
-        ArgumentOutOfRangeException.ThrowIfLessThan(after, TimeSpan.Zero);
+        Timeouts.Validate(after, nameof(after));
         _timeout = after;
         _onTimeout = handler;
         return this;
@@ -110,11 +113,11 @@ public sealed class ChannelSelect
     /// <summary>Waits for the first case that can run, runs it, and returns.</summary>
     /// <param name="cancellationToken">Stops waiting.</param>
     /// <returns>
-    /// <see langword="true"/> when a case ran; <see langword="false"/> when every channel has completed and there is
-    /// no timeout or default case, so no case can ever run again.
+    /// <see langword="true"/> when a case ran; <see langword="false"/> when every channel has completed, so the loop
+    /// can end. The timeout and default cases don't run once every channel has completed.
     /// </returns>
     /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was cancelled.</exception>
-    /// <remarks>If a channel completed with an exception, that exception is thrown.</remarks>
+    /// <remarks>If a channel completed with an exception (including an <see cref="OperationCanceledException"/>), that exception is thrown.</remarks>
     public async Task<bool> RunAsync(CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -141,14 +144,16 @@ public sealed class ChannelSelect
                     anyOpen |= !selectCase.IsCompleted;
                 }
 
+                // Once every channel has completed, no case can make progress: stop here rather than run the default or
+                // timeout case on every call, which would turn the caller's loop into a busy or endless one.
+                if (!anyOpen && (count > 0 || (_onDefault is null && _onTimeout is null)))
+                {
+                    return false;
+                }
                 if (_onDefault is not null)
                 {
                     await _onDefault().ConfigureAwait(false);
                     return true;
-                }
-                if (!anyOpen && _onTimeout is null)
-                {
-                    return false;
                 }
 
                 // Nothing is ready: wait until a channel might have an item, the time is up, or the caller cancels.
@@ -227,7 +232,8 @@ public sealed class ChannelSelect
                 return true;
             }
 
-            if (reader.Completion.IsFaulted)
+            // A channel completed with an OperationCanceledException ends up cancelled rather than faulted; rethrow both.
+            if (reader.Completion.IsCompleted && !reader.Completion.IsCompletedSuccessfully)
             {
                 reader.Completion.GetAwaiter().GetResult();
             }

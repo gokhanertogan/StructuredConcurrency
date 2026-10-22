@@ -96,7 +96,7 @@ public class TaskGroupTests
 
         Task run = TaskGroup.RunAsync(async group =>
         {
-            group.Run(async ct =>
+            _ = group.Run(async ct =>
             {
                 seen = ct;
                 await childGate.Task;
@@ -321,7 +321,7 @@ public class TaskGroupTests
     {
         int result = await TaskGroup.RunAsync(async group =>
         {
-            group.Run(ct => Task.Delay(Timeout.Infinite, ct));
+            _ = group.Run(ct => Task.Delay(Timeout.Infinite, ct));
             group.Cancel();
             await Task.Yield();
             return 42;
