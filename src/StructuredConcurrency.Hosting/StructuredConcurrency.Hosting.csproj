@@ -6,6 +6,10 @@
     <Title>StructuredConcurrency.Hosting: structured concurrency for BackgroundService</Title>
     <Description>A BackgroundService whose work runs in a StructuredConcurrency TaskGroup: on shutdown every child task is cancelled and awaited, and a failing child stops the service with its real exception instead of leaving work running in the background.</Description>
     <PackageTags>backgroundservice;hostedservice;worker;hosting;graceful-shutdown;structured-concurrency;taskgroup;async;cancellation</PackageTags>
+
+    <!-- Fails the pack if the public API breaks compatibility with the last release. -->
+    <EnablePackageValidation>true</EnablePackageValidation>
+    <PackageValidationBaselineVersion>0.5.0</PackageValidationBaselineVersion>
   </PropertyGroup>
 
   <ItemGroup>

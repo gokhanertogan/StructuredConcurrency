@@ -239,6 +239,24 @@ Each group's activity has these tags:
 
 A failed group has error status and one `exception` event per failure, so a trace shows which child failed and which ones were cancelled because of it. `AllAsync`, `AnyAsync` and `AllSettledAsync` name their groups after themselves. Set `EnableTracing = false` on a group you don't want traced. With no listener, `ActivitySource` creates nothing.
 
+## Analyzers
+
+Structured concurrency only works if the work looks at the token it is given. The package includes two compiler warnings that catch the code that doesn't, in your IDE and in `dotnet build`. No extra package is needed.
+
+| Rule | Catches | Why it matters |
+| --- | --- | --- |
+| `SC0001` | `group.Run(ct => DownloadAsync(url))`: the token is never used | When a sibling fails or the time is up, this download keeps going and the group waits for it |
+| `SC0002` | `group.Run(_ => DownloadAsync(url, cancellationToken))`: an outer token instead of the work's own | Only the caller can cancel it, so a failing sibling, a timeout or `group.Cancel()` doesn't stop it |
+
+They check every lambda that StructuredConcurrency passes a token to: `group.Run`, `StartAsync`, `Produce`, `AllAsync`, `AnyAsync`, `AllSettledAsync`, the timeouts, `SelectConcurrentAsync` and `SingleFlight`. `SC0002` has a code fix that switches the work to its own token.
+
+Name the parameter `_` to say that ignoring the token is intended; `SC0001` then stays quiet. Work that can't be cancelled anyway, such as `ct => Task.FromResult(value)`, isn't reported. To change a rule's severity, use `.editorconfig`:
+
+```ini
+[*.cs]
+dotnet_diagnostic.SC0001.severity = error
+```
+
 ## Go channels in C#: select, merge and broadcast
 
 `System.Threading.Channels` gives .NET Go-style channels, but not Go's `select` statement or the fan-in and fan-out patterns built around it. The `StructuredConcurrency.Channels` namespace adds them. None of them leave work running in the background.
@@ -392,6 +410,10 @@ Derive from `StructuredBackgroundService` in `StructuredConcurrency.Hosting` and
 
 Pass a `FakeTimeProvider` from `Microsoft.Extensions.TimeProvider.Testing` to the `TimeProvider` overload of `WithTimeoutAsync`, `WithTimeoutOrDefaultAsync` or `TryWithTimeoutAsync`, or to `new ChannelSelect(timeProvider)`. Then call `Advance` to make the time pass.
 
+### How do I find tasks that ignore cancellation?
+
+Build with StructuredConcurrency 0.6 or later. Its analyzers report work that never uses the token it is given (`SC0001`) and work that uses an outer token instead of its own (`SC0002`). See [Analyzers](#analyzers).
+
 ### Does it run tasks on the thread pool?
 
 No. `group.Run` invokes the delegate on the calling thread, like calling an async method. Wrap CPU-bound work in `Task.Run`. With `MaxConcurrency`, queued work starts on the thread that freed the slot, but with the `ExecutionContext` `Run` was called in, so `AsyncLocal` values and tracing flow as if it had started right away. It doesn't go back to a UI `SynchronizationContext`.
@@ -417,7 +439,7 @@ When children do real asynchronous work, TaskGroup takes 5–25% longer than the
 
 ## Status
 
-Version 0.5 includes:
+Version 0.6 includes:
 
 - `TaskGroup.RunAsync`, `Run`, `StartAsync`, `Cancel` and `TaskGroupOptions` (with `CancelOnFailure`, `MaxConcurrency` and `Name`)
 - `AllAsync`, `AnyAsync`, `AllSettledAsync` and `TaskOutcome<T>`
@@ -426,6 +448,7 @@ Version 0.5 includes:
 - `SelectConcurrentAsync` and `SingleFlight<TKey, TValue>`
 - in `StructuredConcurrency.Channels`: `ChannelSelect`, `MergeWith`, `BroadcastAsync` and `group.Produce`
 - in the `StructuredConcurrency.Hosting` package: `StructuredBackgroundService`
+- the `SC0001` and `SC0002` analyzers, with a code fix for `SC0002`
 
 The API may change before 1.0, but each release is checked against the previous one with package validation, so a breaking change is always deliberate.
 
