@@ -8,7 +8,7 @@ namespace StructuredConcurrency;
 /// A group is created and owned by <see cref="RunAsync(Func{TaskGroup, Task}, CancellationToken)"/> and its overloads;
 /// the body uses <see cref="Run(Func{CancellationToken, Task})"/> to start children.
 /// </remarks>
-public sealed class TaskGroup
+public sealed partial class TaskGroup
 {
     private const int StateOpen = 0;
     private const int StateCancelling = 1;

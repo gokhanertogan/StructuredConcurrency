@@ -10,7 +10,7 @@
     <IsAotCompatible>true</IsAotCompatible>
 
     <PackageId>StructuredConcurrency</PackageId>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <Authors>Gokhan Ertogan</Authors>
     <Description>Structured concurrency for .NET: child tasks run inside a scope that completes only when all of them have finished, and the first failure cancels the rest.</Description>
     <PackageTags>async;tasks;structured-concurrency;cancellation;taskgroup</PackageTags>
