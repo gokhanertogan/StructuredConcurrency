@@ -595,14 +595,14 @@ The benchmark compares TaskGroup with the code it replaces: a hand-written `Canc
 
 | Children | Children complete | Hand-written | TaskGroup | Hand-written alloc. | TaskGroup alloc. |
 | ---: | --- | ---: | ---: | ---: | ---: |
-| 2 | asynchronously | 1.87 μs | 1.95 μs | 850 B | 663 B |
-| 10 | asynchronously | 5.32 μs | 6.64 μs | 2,663 B | 2,303 B |
-| 100 | asynchronously | 38.0 μs | 43.8 μs | 26,109 B | 20,896 B |
-| 2 | synchronously | 37 ns | 71 ns | 160 B | 248 B |
-| 10 | synchronously | 94 ns | 160 ns | 224 B | 248 B |
-| 100 | synchronously | 896 ns | 1,211 ns | 944 B | 248 B |
+| 2 | asynchronously | 2.49 μs | 2.47 μs | 849 B | 678 B |
+| 10 | asynchronously | 8.08 μs | 8.18 μs | 2,725 B | 2,323 B |
+| 100 | asynchronously | 43.3 μs | 50.4 μs | 25,600 B | 20,960 B |
+| 2 | synchronously | 41 ns | 84 ns | 160 B | 264 B |
+| 10 | synchronously | 106 ns | 194 ns | 224 B | 264 B |
+| 100 | synchronously | 950 ns | 1,350 ns | 944 B | 264 B |
 
-When children do real asynchronous work, TaskGroup takes 5–25% longer than the hand-written code in this run (these numbers move by about ±10% between runs) and allocates 14–22% less. When children complete synchronously, it costs about 3 ns more per child, but its allocation stays at 248 B regardless of the number of children. Tracing costs nothing measurable when no listener is subscribed. `AnyAsync` over three operations takes 3.6 μs, against 4.1 μs for a hand-written `Task.WhenEach` loop, but allocates 1,840 B against 931 B.
+When children do real asynchronous work, TaskGroup takes about as long as the hand-written code for a few children and up to 17% longer for 100 in this run (these numbers move by about ±10% between runs), and allocates 15–20% less. When children complete synchronously, it costs about 4 ns more per child, but its allocation stays at 264 B regardless of the number of children. The numbers include the checks for tracing and metrics; with no listener subscribed, neither records anything. `AnyAsync` over three operations takes 3.6 μs, against 6.2 μs for a hand-written `Task.WhenEach` loop, but allocates 1,879 B against 926 B.
 
 ## Status
 
