@@ -1,3 +1,5 @@
+using System.Threading.RateLimiting;
+
 namespace StructuredConcurrency;
 
 /// <summary>Options that control how a <see cref="TaskGroup"/> runs its children and reacts to failures.</summary>
@@ -54,4 +56,16 @@ public sealed class TaskGroupOptions
             _maxConcurrency = value;
         }
     }
+
+    /// <summary>
+    /// Gets a rate limiter that every child takes one permit from before it starts, or <see langword="null"/> for none.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="MaxConcurrency"/> limits how many children run at once; a rate limiter such as a
+    /// <see cref="TokenBucketRateLimiter"/> limits how many start per second, for an API with a rate limit. A child
+    /// waits for its permit while it holds its concurrency slot, and gives the permit back when it completes, so a
+    /// <see cref="ConcurrencyLimiter"/> shared by several groups limits them together. A child that is refused a permit
+    /// fails with <see cref="RateLimitRejectedException"/>. The group doesn't dispose the limiter.
+    /// </remarks>
+    public RateLimiter? RateLimiter { get; init; }
 }

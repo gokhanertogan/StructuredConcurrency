@@ -5,7 +5,7 @@
 [![CI](https://github.com/gokhanertogan/StructuredConcurrency/actions/workflows/ci.yml/badge.svg)](https://github.com/gokhanertogan/StructuredConcurrency/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Structured concurrency for C#.** Run tasks in parallel inside a `TaskGroup`. The first failure cancels the other tasks, no task keeps running after the group returns, and you get the real error back instead of a `TaskCanceledException`. It includes C# versions of JavaScript's `Promise.all`, `Promise.any` and `Promise.allSettled`, Kotlin's `withTimeout`, Go's `select` and `singleflight`, and the same model as Python's `asyncio.TaskGroup`, Kotlin's `coroutineScope`, Swift's task groups, Java's `StructuredTaskScope` and Go's `errgroup`.
+**Structured concurrency for C#.** Run tasks in parallel inside a `TaskGroup`. The first failure cancels the other tasks, no task keeps running after the group returns, and you get the real error back instead of a `TaskCanceledException`. It includes C# versions of JavaScript's `Promise.all`, `Promise.any` and `Promise.allSettled`, Kotlin's `withTimeout`, Go's `select` and `singleflight`, Erlang's supervisors, hedged requests, and the same model as Python's `asyncio.TaskGroup`, Kotlin's `coroutineScope`, Swift's task groups, Java's `StructuredTaskScope` and Go's `errgroup`.
 
 ```
 dotnet add package StructuredConcurrency
@@ -119,6 +119,28 @@ await TaskGroup.RunAsync(async group =>
 byte[][] files = await TaskGroup.AllAsync(urls, (url, ct) => DownloadAsync(url, ct), maxConcurrency: 8, cancellationToken);
 ```
 
+### Limit how many tasks start per second
+
+`MaxConcurrency` limits how many children run at once. For an API that allows only so many calls per second, give the group a rate limiter from `System.Threading.RateLimiting`: every child takes a permit before it starts and gives it back when it completes.
+
+```csharp
+using var limiter = new TokenBucketRateLimiter(new TokenBucketRateLimiterOptions
+{
+    TokenLimit = 10, TokensPerPeriod = 10, ReplenishmentPeriod = TimeSpan.FromSeconds(1), QueueLimit = 1_000,
+});
+
+await TaskGroup.RunAsync(group =>
+{
+    foreach (var id in ids)
+    {
+        group.Run(ct => api.GetAsync(id, ct));   // at most 10 calls a second
+    }
+    return Task.CompletedTask;
+}, new TaskGroupOptions { RateLimiter = limiter, MaxConcurrency = 4 }, cancellationToken);
+```
+
+A child waits for its permit while holding its concurrency slot, and a child the limiter refuses (its queue is full) fails with `RateLimitRejectedException`, which has the limiter's `RetryAfter` when it gives one. A `ConcurrencyLimiter` shared by several groups limits them together. The group doesn't dispose the limiter.
+
 ### Stream the results as they are ready
 
 `SelectConcurrentAsync` runs an operation for every item with a limit and yields each result as soon as it can, like Kotlin's `flatMapMerge`, Rust's `buffered` / `buffer_unordered` and Python's `asyncio.as_completed`. Results come in input order by default; pass `preserveOrder: false` to get them as they complete. Items are read only as slots free up, so the input can be long or endless.
@@ -148,6 +170,19 @@ await foreach (Receipt receipt in orders.Reader.ReadAllAsync(cancellationToken)
 
 > **Upgrading from 0.6:** a type that is both `IEnumerable<T>` and `IAsyncEnumerable<T>`, such as an EF Core `DbSet<T>` or query, now matches both overloads, and the call no longer compiles (CS0121). Add `.AsAsyncEnumerable()` to read it asynchronously, which is what you want for a database, or `.AsEnumerable()` to keep reading it synchronously as before.
 
+### Batch a stream by size and time
+
+`ChunkAsync` groups an `IAsyncEnumerable` into arrays of up to `maxSize` items, and cuts a smaller one when its first item has waited `maxDelay`, like Rx's `Buffer(timeSpan, count)` or Kafka's `batch.size` and `linger.ms`. Use it for batch inserts and bulk API calls, where waiting for a full batch would hold up the items that are already there.
+
+```csharp
+await foreach (Event[] batch in events.Reader.ReadAllAsync(cancellationToken).ChunkAsync(500, TimeSpan.FromSeconds(1)))
+{
+    await database.BulkInsertAsync(batch, cancellationToken);   // 500 events, or fewer after a second
+}
+```
+
+Chunks are never empty, and the last one holds whatever is left when the source ends. The next read stays in flight while you handle a chunk, and ending the loop cancels it and disposes the source. `ChunkAsync` takes a `TimeProvider` too.
+
 ## Timeouts that cancel the work
 
 `task.WaitAsync(timeout)` stops *waiting* when the time is up, but the task keeps running with nobody watching it. `TaskGroup.WithTimeoutAsync` cancels the operation's token when the time is up and returns only after the operation has stopped, like Kotlin's `withTimeout`, Python's `asyncio.timeout` and Trio's `fail_after`.
@@ -174,6 +209,20 @@ Task<User> load = TaskGroup.WithTimeoutAsync(TimeSpan.FromSeconds(30), time, ct 
 time.Advance(TimeSpan.FromSeconds(30));
 await Assert.ThrowsAsync<TimeoutException>(() => load);   // no 30-second test
 ```
+
+## Hedged requests
+
+A few slow responses dominate tail latency. `TaskGroup.HedgeAsync` starts the operation, and if it hasn't succeeded after `delay`, starts another attempt alongside it, up to `maxAttempts`. The first attempt to succeed wins and the others are cancelled, so the call takes about as long as the fastest attempt. This is the hedged request from Google's ["The Tail at Scale"](https://research.google/pubs/the-tail-at-scale/).
+
+```csharp
+// A second attempt if the first takes longer than the 95th percentile, say 50 ms
+Product product = await TaskGroup.HedgeAsync(TimeSpan.FromMilliseconds(50), ct => catalog.GetAsync(id, ct), maxAttempts: 2, cancellationToken);
+
+// Each attempt gets its number, so it can go to another replica
+string page = await TaskGroup.HedgeAsync(TimeSpan.FromMilliseconds(100), (attempt, ct) => replicas[attempt].GetAsync(path, ct), maxAttempts: replicas.Length);
+```
+
+When every attempt that is running has failed, the next one starts at once instead of after the delay; with `Timeout.InfiniteTimeSpan` as the delay, attempts start only on failure. If every attempt fails, you get an `AggregateException` with each failure, as with `AnyAsync`. Only hedge operations that are safe to run twice, such as reads.
 
 ## Start a task and wait until it's ready
 
@@ -209,6 +258,19 @@ public Task<Product> GetProductAsync(string id, CancellationToken cancellationTo
 
 Results aren't cached: once the operation completes, the next call starts a new one, so put it behind your cache. Each caller's token stops only that caller's wait. The shared operation is cancelled only when *every* caller has given up, and the last one to give up waits for it to stop. `Forget(key)` makes the next call start fresh even while an operation is running.
 
+## Run work for the same key one at a time
+
+`KeyedSequencer<TKey>` runs operations one at a time per key, in the order they were asked for, while operations for different keys run concurrently. Updates to one account, or the messages of one conversation, then never overlap, without a global lock that makes every other account wait.
+
+```csharp
+private readonly KeyedSequencer<Guid> _accounts = new();
+
+public Task<Balance> ApplyAsync(Transaction transaction, CancellationToken cancellationToken) =>
+    _accounts.RunAsync(transaction.AccountId, ct => _ledger.ApplyAsync(transaction, ct), cancellationToken);
+```
+
+A caller that gives up while waiting for its turn just leaves the line: its operation never runs, and the next one still waits for the operation running before it. Once an operation has started, the caller's token cancels it, and the call returns only after it has ended. A key takes no memory once nothing is running or waiting for it.
+
 ## Background services that shut down cleanly
 
 The `StructuredConcurrency.Hosting` package adds `StructuredBackgroundService`, a `BackgroundService` whose work runs in a `TaskGroup`.
@@ -233,6 +295,47 @@ public sealed class OrderWorker(IQueue queue, IMetrics metrics) : StructuredBack
 
 When the host stops, every child is cancelled and `StopAsync` returns only after all of them have ended. If a child fails, the others are cancelled and the service stops with that exception, which the host logs and (by default) uses to stop the application. A plain `BackgroundService` gives neither: work started with `Task.Run` keeps running after shutdown, and its exceptions disappear. Override `Options` to set `MaxConcurrency` or `CancelOnFailure = false`. The service's group doesn't record a tracing activity: it lives as long as the host, so its span would never end. What the children trace is recorded as usual.
 
+## Restart work that fails: supervisors
+
+`Supervisor.RunAsync` restarts work when it fails, like an Erlang/OTP supervisor: it waits a little longer before each restart, and if the work fails more than `MaxRestarts` times within `Window`, it gives up and lets the failure through. Failures further apart than the window are forgotten, so work that fails now and then keeps going, while work that keeps failing is stopped.
+
+```csharp
+var policy = new RestartPolicy
+{
+    MaxRestarts = 5,
+    Window = TimeSpan.FromMinutes(1),
+    InitialDelay = TimeSpan.FromSeconds(1),   // then 2 s, 4 s... up to MaxDelay
+    ShouldRestart = exception => exception is not AuthenticationException,
+    OnRestart = restart => logger.LogWarning(restart.Failure, "Restart {Restart} in {Delay}", restart.Restart, restart.Delay),
+};
+
+await TaskGroup.RunAsync(group =>
+{
+    group.Run(ct => Supervisor.RunAsync(ConsumeOrdersAsync, policy, ct));   // restarts only the consumer: one_for_one
+    group.Run(ct => PublishMetricsAsync(ct));
+    return Task.CompletedTask;
+}, cancellationToken);
+
+// Restart the whole group when any child fails: one_for_all
+await Supervisor.RunGroupAsync(group =>
+{
+    group.Run(ct => ReadAsync(connection, ct));
+    group.Run(ct => WriteAsync(connection, ct));
+    return Task.CompletedTask;
+}, policy, cancellationToken: cancellationToken);
+```
+
+Cancelling the token stops the work and the wait before a restart. Once it is cancelled, nothing is restarted, whatever the work throws on its way out. The next run starts only after the previous one has ended, so nothing runs twice at once. In a `StructuredBackgroundService`, override `RestartPolicy` and the service's work starts again in a new group when it fails, instead of stopping the service:
+
+```csharp
+public sealed class OrderWorker(IQueue queue) : StructuredBackgroundService
+{
+    protected override RestartPolicy RestartPolicy => new() { MaxRestarts = 10, Window = TimeSpan.FromMinutes(5) };
+
+    protected override Task ExecuteAsync(TaskGroup group) { ... }   // runs again after each restart
+}
+```
+
 ## Tracing with OpenTelemetry
 
 Every group records an `Activity`, and the activities of its children nest under it, including children that waited in a `MaxConcurrency` queue. Subscribe to the source to see them:
@@ -251,16 +354,38 @@ Each group's activity has these tags:
 
 A failed group has error status and one `exception` event per failure, so a trace shows which child failed and which ones were cancelled because of it. `AllAsync`, `AnyAsync` and `AllSettledAsync` name their groups after themselves. Set `EnableTracing = false` on a group you don't want traced. With no listener, `ActivitySource` creates nothing.
 
+## Metrics
+
+Groups also record metrics with the `StructuredConcurrency` meter, for OpenTelemetry or `dotnet-counters`:
+
+```csharp
+builder.Services.AddOpenTelemetry().WithMetrics(metrics => metrics.AddMeter(TaskGroup.MeterName));
+```
+
+| Instrument | Type | What it measures |
+| --- | --- | --- |
+| `taskgroup.duration` | Histogram (s) | How long groups ran, tagged with `taskgroup.outcome` |
+| `taskgroup.active_children` | UpDownCounter | Children that have started and not yet completed, including ones waiting for a `RateLimiter` permit |
+| `taskgroup.queued_children` | UpDownCounter | Children waiting for a `MaxConcurrency` slot |
+| `taskgroup.failures` | Counter | Failures, not counting the cancellations they cause |
+
+Every measurement is tagged with `taskgroup.name`, the group's `Name` (`TaskGroup` by default), so give the groups you want to watch a name. With no listener, groups record nothing. A group checks for a listener when it starts, so one that was already running when a listener subscribed isn't measured.
+
 ## Analyzers
 
-Structured concurrency only works if the work looks at the token it is given. The package includes two compiler warnings that catch the code that doesn't, in your IDE and in `dotnet build`. No extra package is needed.
+Structured concurrency only works if the work looks at the token it is given. The package includes compiler warnings that catch the code that doesn't, in your IDE and in `dotnet build`. No extra package is needed.
 
 | Rule | Catches | Why it matters |
 | --- | --- | --- |
 | `SC0001` | `group.Run(ct => DownloadAsync(url))`: the token is never used | When a sibling fails or the time is up, this download keeps going and the group waits for it |
 | `SC0002` | `group.Run(_ => DownloadAsync(url, cancellationToken))`: an outer token instead of the work's own | Only the caller can cancel it, so a failing sibling, a timeout or `group.Cancel()` doesn't stop it |
+| `SC0003` | `Task.Run(() => DownloadAsync(url));` in a group's body or child, with the task thrown away | The work isn't a child: the group doesn't cancel it, doesn't wait for it, and never sees it fail |
 
-They check every lambda that StructuredConcurrency passes a token to: `group.Run`, `StartAsync`, `Produce`, `AllAsync`, `AnyAsync`, `AllSettledAsync`, the timeouts, `SelectConcurrentAsync` and `SingleFlight`. `SC0002` has a code fix that switches the work to its own token.
+`SC0001` and `SC0002` check every lambda that StructuredConcurrency passes a token to: `group.Run`, `StartAsync`, `Produce`, `AllAsync`, `AnyAsync`, `AllSettledAsync`, `HedgeAsync`, the timeouts, `SelectConcurrentAsync`, `SingleFlight`, `KeyedSequencer` and `Supervisor`. `SC0002` has a code fix that switches the work to its own token.
+
+`SC0003` checks `Task.Run`, `Task.Factory.StartNew` and `ThreadPool.QueueUserWorkItem` calls whose task is thrown away, in a group's body, in its children and in methods that take a `TaskGroup`. Awaiting or returning the task is fine. Its code fix turns `Task.Run(() => WorkAsync())` into `group.Run(ct => WorkAsync())`; then pass `ct` on. Unlike `Task.Run`, `group.Run` starts the work on the calling thread, which is what you want for work that awaits I/O. For work that computes for a while before its first `await`, keep the thread-pool hop instead: `group.Run(ct => Task.Run(() => WorkAsync(ct), ct))`.
+
+> **Upgrading from 0.7:** `SC0003` is new, so a build with `TreatWarningsAsErrors` can stop at code it now reports. Fix it, or set its severity in `.editorconfig` as shown below. The package now depends on `System.Threading.RateLimiting`, which ASP.NET Core apps already have.
 
 Name the parameter `_` to say that ignoring the token is intended; `SC0001` then stays quiet. Work that can't be cancelled anyway, such as `ct => Task.FromResult(value)`, isn't reported. To change a rule's severity, use `.editorconfig`:
 
@@ -302,6 +427,19 @@ while (await select.RunAsync(cancellationToken)) { }   // false once every chann
 ```
 
 `Default(...)` adds Go's `default` case: it runs when nothing is ready, so `RunAsync` never waits. Once every channel has completed, `RunAsync` returns `false` instead of running the default or timeout case, so the loop above always ends.
+
+`Send(...)` adds Go's send case, `case out <- v`: it writes when the channel has room. Its `when` condition does what a `nil` channel does in Go, turning the case off, for instance while there is nothing to send. Here is Go's classic buffer between two channels:
+
+```csharp
+var pending = new Queue<Order>();
+var select = new ChannelSelect()
+    .Case(incoming.Reader, order => pending.Enqueue(order))
+    .Send(outgoing.Writer, () => pending.Peek(), () => pending.Dequeue(), when: () => pending.Count > 0);
+
+while (await select.RunAsync(cancellationToken)) { }   // false once incoming has completed and the buffer is empty
+```
+
+The item function runs each time the case is tried, so keep side effects in the handler. A writer that has been completed counts as completed, like a reader's channel.
 
 **Fan-in → `MergeWith`.** Read several channels as one stream. It reads only while you enumerate, so there is no pump task to leak.
 
@@ -356,6 +494,7 @@ await TaskGroup.RunAsync(async group =>
 | Go | `errgroup.WithContext` | `TaskGroup.RunAsync`, `TaskGroup.AllAsync` |
 | Go | `errgroup.SetLimit` | `new TaskGroupOptions { MaxConcurrency = n }` |
 | Go | `select { case ... }` | `ChannelSelect` |
+| Go | `select { case ch <- v: }` | `ChannelSelect.Send` |
 | Go | Fan-in (merging channels) | `reader.MergeWith(...)` |
 | Go | Fan-out (one channel to many) | `reader.BroadcastAsync(...)` |
 | Go | `singleflight.Group` | `SingleFlight<TKey, TValue>` |
@@ -367,6 +506,10 @@ await TaskGroup.RunAsync(async group =>
 | Rust | `buffered(n)`, `buffer_unordered(n)` | `items.SelectConcurrentAsync(..., maxConcurrency: n)` |
 | Python | `asyncio.as_completed` | `items.SelectConcurrentAsync(..., preserveOrder: false)` |
 | Kotlin | `produce { }` | `group.Produce(...)` |
+| Erlang/OTP | `supervisor` with `one_for_one` | `Supervisor.RunAsync(work, policy)` |
+| Erlang/OTP | `supervisor` with `one_for_all` | `Supervisor.RunGroupAsync(body, policy)` |
+| Rx | `Buffer(timeSpan, count)` | `source.ChunkAsync(count, timeSpan)` |
+| gRPC, Envoy | Hedging policy | `TaskGroup.HedgeAsync` |
 
 ## Guarantees
 
@@ -434,6 +577,18 @@ No. `group.Run` invokes the delegate on the calling thread, like calling an asyn
 
 Call `group.Cancel()`. It cancels the remaining children without counting as a failure.
 
+### How do I restart a background task that fails in C#?
+
+Wrap it in `Supervisor.RunAsync(work, new RestartPolicy { ... })`. It restarts the work with a growing delay, and gives up with the failure when there are more than `MaxRestarts` restarts within `Window`, so a task that is broken for good doesn't restart forever. In a `StructuredBackgroundService`, override `RestartPolicy` to restart the whole service's work.
+
+### How do I send a second request when the first one is slow?
+
+`TaskGroup.HedgeAsync(delay, ct => SendAsync(ct), maxAttempts: 2)` starts a second attempt when the first hasn't succeeded within `delay`, takes whichever succeeds first and cancels the other. Pick a delay around the 95th percentile of the latency, so only the slowest requests are sent twice.
+
+### How do I process messages for the same key in order but different keys in parallel?
+
+Use `KeyedSequencer<TKey>.RunAsync(key, ...)`. Operations for one key run one after another in the order they arrive, and different keys don't wait for each other. A `SemaphoreSlim` per key in a `ConcurrentDictionary` does the same, but then you have to remove the semaphores yourself and keep them from being removed while someone still waits on them.
+
 ## Performance
 
 The benchmark compares TaskGroup with the code it replaces: a hand-written `CancellationTokenSource` that the first failure cancels, plus `Task.WhenAll`. It was run with BenchmarkDotNet on .NET 10 on an Apple M2 Pro; the source is in [`benchmarks`](benchmarks/StructuredConcurrency.Benchmarks/Program.cs).
@@ -451,16 +606,17 @@ When children do real asynchronous work, TaskGroup takes 5–25% longer than the
 
 ## Status
 
-Version 0.7 includes:
+Version 0.8 includes:
 
-- `TaskGroup.RunAsync`, `Run`, `StartAsync`, `Cancel` and `TaskGroupOptions` (with `CancelOnFailure`, `MaxConcurrency` and `Name`)
-- `AllAsync`, `AnyAsync`, `AllSettledAsync` and `TaskOutcome<T>`
+- `TaskGroup.RunAsync`, `Run`, `StartAsync`, `Cancel` and `TaskGroupOptions` (with `CancelOnFailure`, `MaxConcurrency`, `RateLimiter` and `Name`)
+- `AllAsync`, `AnyAsync`, `AllSettledAsync`, `HedgeAsync` and `TaskOutcome<T>`
 - `WithTimeoutAsync`, `WithTimeoutOrDefaultAsync` and `TryWithTimeoutAsync`, with or without a `TimeProvider`
-- OpenTelemetry tracing through the `TaskGroup.ActivitySourceName` source
-- `SelectConcurrentAsync`, over a collection or an `IAsyncEnumerable`, and `SingleFlight<TKey, TValue>`
-- in `StructuredConcurrency.Channels`: `ChannelSelect`, `MergeWith`, `BroadcastAsync` and `group.Produce`
-- in the `StructuredConcurrency.Hosting` package: `StructuredBackgroundService`
-- the `SC0001` and `SC0002` analyzers, with a code fix for `SC0002`
+- `Supervisor.RunAsync`, `Supervisor.RunGroupAsync` and `RestartPolicy`
+- OpenTelemetry tracing through the `TaskGroup.ActivitySourceName` source, and metrics through the `TaskGroup.MeterName` meter
+- `SelectConcurrentAsync`, over a collection or an `IAsyncEnumerable`, `ChunkAsync`, `SingleFlight<TKey, TValue>` and `KeyedSequencer<TKey>`
+- in `StructuredConcurrency.Channels`: `ChannelSelect` (with send cases), `MergeWith`, `BroadcastAsync` and `group.Produce`
+- in the `StructuredConcurrency.Hosting` package: `StructuredBackgroundService`, with an optional `RestartPolicy`
+- the `SC0001`, `SC0002` and `SC0003` analyzers, with code fixes for `SC0002` and `SC0003`
 
 The API may change before 1.0, but each release is checked against the previous one with package validation, so a breaking change is always deliberate.
 

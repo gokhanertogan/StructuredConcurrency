@@ -27,23 +27,40 @@ public abstract class StructuredBackgroundService : BackgroundService
     protected virtual TaskGroupOptions Options => TaskGroupOptions.Default;
 
     /// <summary>
+    /// Gets how to restart the service's work when it fails, or <see langword="null"/> (the default) to let the first
+    /// failure stop the service.
+    /// </summary>
+    /// <remarks>
+    /// When a child fails, its siblings are cancelled as usual; then, as the policy allows, a new group is started and
+    /// <see cref="ExecuteAsync(TaskGroup)"/> runs again, like Erlang's <c>one_for_all</c> supervisor. Once the policy
+    /// gives up, the service stops with the failure. To restart one child on its own instead, wrap it in
+    /// <see cref="Supervisor.RunAsync(Func{CancellationToken, Task}, StructuredConcurrency.RestartPolicy, CancellationToken)"/>.
+    /// </remarks>
+    protected virtual RestartPolicy? RestartPolicy => null;
+
+    /// <summary>
     /// Starts the service's work in <paramref name="group"/>. Use the group's
     /// <see cref="TaskGroup.CancellationToken"/>, which is cancelled when the host stops or a child fails.
     /// </summary>
     /// <param name="group">The group to start children in.</param>
     /// <returns>A task that completes when the body has finished; the children may keep running after it.</returns>
+    /// <remarks>With a <see cref="RestartPolicy"/>, this runs again, in a new group, after each restart.</remarks>
     protected abstract Task ExecuteAsync(TaskGroup group);
 
     /// <inheritdoc/>
     protected sealed override Task ExecuteAsync(CancellationToken stoppingToken)
     {
         TaskGroupOptions options = Options ?? TaskGroupOptions.Default;
-        return TaskGroup.RunAsync(ExecuteAsync, new TaskGroupOptions
+        var groupOptions = new TaskGroupOptions
         {
             Name = options.Name,
             CancelOnFailure = options.CancelOnFailure,
             MaxConcurrency = options.MaxConcurrency,
+            RateLimiter = options.RateLimiter,
             EnableTracing = false,
-        }, stoppingToken);
+        };
+        return RestartPolicy is RestartPolicy policy
+            ? Supervisor.RunGroupAsync(ExecuteAsync, policy, groupOptions, stoppingToken)
+            : TaskGroup.RunAsync(ExecuteAsync, groupOptions, stoppingToken);
     }
 }

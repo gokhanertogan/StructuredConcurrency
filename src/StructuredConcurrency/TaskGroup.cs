@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Threading.RateLimiting;
 
 namespace StructuredConcurrency;
 
@@ -27,7 +28,7 @@ public sealed partial class TaskGroup
         new(ActivitySourceName, typeof(TaskGroup).Assembly.GetName().Version?.ToString());
 
     private static readonly Action<Task, object?> s_onChildCompleted =
-        static (task, state) => ((TaskGroup)state!).OnCompleted(task, isBody: false);
+        static (task, state) => ((TaskGroup)state!).OnChildCompleted(task);
 
     private static readonly Action<Task, object?> s_onBodyCompleted =
         static (task, state) => ((TaskGroup)state!).OnCompleted(task, isBody: true);
@@ -36,7 +37,7 @@ public sealed partial class TaskGroup
         static (task, state) =>
         {
             var group = (TaskGroup)state!;
-            group.OnCompleted(task, isBody: false);
+            group.OnChildCompleted(task);
             if (group.TryTakeNext(out QueuedChild? next))
             {
                 group.Pump(next);
@@ -47,6 +48,7 @@ public sealed partial class TaskGroup
     private readonly CancellationTokenSource _cts;
     private readonly CancellationToken _callerToken;
     private readonly bool _cancelOnFailure;
+    private readonly RateLimiter? _rateLimiter;
 
     // Running children plus the body; the group completes on the transition to zero.
     private int _outstanding = 1;
@@ -57,6 +59,9 @@ public sealed partial class TaskGroup
     // Only while tracing, so a group that isn't traced stays small.
     private readonly Trace? _trace;
 
+    // Only while metrics are collected.
+    private readonly Measurements? _measurements;
+
     // Only used with a concurrency limit: children waiting for a slot, guarded by locking the queue itself.
     private readonly int _maxConcurrency;
     private readonly Queue<QueuedChild>? _queue;
@@ -66,6 +71,7 @@ public sealed partial class TaskGroup
     {
         _completer = completer;
         _cancelOnFailure = options.CancelOnFailure;
+        _rateLimiter = options.RateLimiter;
         _callerToken = callerToken;
         _cts = callerToken.CanBeCanceled
             ? CancellationTokenSource.CreateLinkedTokenSource(callerToken)
@@ -81,6 +87,8 @@ public sealed partial class TaskGroup
                 _trace = new Trace(activity, previous);
             }
         }
+
+        _measurements = StartMeasuring(options);
 
         if (options.MaxConcurrency is int maxConcurrency)
         {
@@ -216,6 +224,10 @@ public sealed partial class TaskGroup
         {
             return Task.FromCanceled(CancellationToken);
         }
+        if (_rateLimiter is not null)
+        {
+            work = WithPermit(_rateLimiter, work);
+        }
 
         if (_queue is not null)
         {
@@ -224,6 +236,7 @@ public sealed partial class TaskGroup
             return child.Task;
         }
 
+        _measurements?.ChildStarted();
         Task task = Invoke(work, CancellationToken);
         Track(task, isBody: false);
         return task;
@@ -244,6 +257,10 @@ public sealed partial class TaskGroup
         {
             return Task.FromCanceled<T>(CancellationToken);
         }
+        if (_rateLimiter is not null)
+        {
+            work = WithPermit(_rateLimiter, work);
+        }
 
         if (_queue is not null)
         {
@@ -252,6 +269,7 @@ public sealed partial class TaskGroup
             return child.TypedTask;
         }
 
+        _measurements?.ChildStarted();
         Task<T> task = Invoke(work, CancellationToken);
         Track(task, isBody: false);
         return task;
@@ -301,6 +319,34 @@ public sealed partial class TaskGroup
         }
     }
 
+    // The work, once it has a permit from the limiter; the permit is given back when the work completes.
+    private static Func<CancellationToken, Task> WithPermit(RateLimiter limiter, Func<CancellationToken, Task> work) =>
+        async cancellationToken =>
+        {
+            using RateLimitLease lease = await AcquireAsync(limiter, cancellationToken).ConfigureAwait(false);
+            await Invoke(work, cancellationToken).ConfigureAwait(false);
+        };
+
+    private static Func<CancellationToken, Task<T>> WithPermit<T>(RateLimiter limiter, Func<CancellationToken, Task<T>> work) =>
+        async cancellationToken =>
+        {
+            using RateLimitLease lease = await AcquireAsync(limiter, cancellationToken).ConfigureAwait(false);
+            return await Invoke(work, cancellationToken).ConfigureAwait(false);
+        };
+
+    private static async ValueTask<RateLimitLease> AcquireAsync(RateLimiter limiter, CancellationToken cancellationToken)
+    {
+        RateLimitLease lease = await limiter.AcquireAsync(1, cancellationToken).ConfigureAwait(false);
+        if (lease.IsAcquired)
+        {
+            return lease;
+        }
+
+        TimeSpan? retryAfter = lease.TryGetMetadata(MetadataName.RetryAfter, out TimeSpan after) ? after : null;
+        lease.Dispose();
+        throw new RateLimitRejectedException(retryAfter);
+    }
+
     private bool TryAddChild()
     {
         int count = Volatile.Read(ref _outstanding);
@@ -332,7 +378,14 @@ public sealed partial class TaskGroup
     {
         if (task.IsCompleted)
         {
-            OnCompleted(task, isBody);
+            if (isBody)
+            {
+                OnCompleted(task, isBody: true);
+            }
+            else
+            {
+                OnChildCompleted(task);
+            }
         }
         else
         {
@@ -358,6 +411,8 @@ public sealed partial class TaskGroup
             }
             else
             {
+                // Counted before it can be dequeued, so the count never dips below zero.
+                _measurements?.Queued(1);
                 _queue.Enqueue(child);
             }
         }
@@ -387,6 +442,7 @@ public sealed partial class TaskGroup
                 continue;
             }
 
+            _measurements?.ChildStarted();
             Task task = child.Start(CancellationToken);
             if (!task.IsCompleted)
             {
@@ -399,7 +455,7 @@ public sealed partial class TaskGroup
                 return;
             }
 
-            OnCompleted(task, isBody: false);
+            OnChildCompleted(task);
         }
         while (TryTakeNext(out child));
     }
@@ -409,13 +465,14 @@ public sealed partial class TaskGroup
     {
         lock (_queue!)
         {
-            if (_queue.TryDequeue(out next))
+            if (!_queue.TryDequeue(out next))
             {
-                return true;
+                _running--;
+                return false;
             }
-            _running--;
-            return false;
         }
+        _measurements?.Queued(-1);
+        return true;
     }
 
     private void DrainQueue()
@@ -432,9 +489,17 @@ public sealed partial class TaskGroup
                 item = _queue.Dequeue();
             }
 
+            _measurements?.Queued(-1);
             item.Cancel(CancellationToken);
             OnCompleted(item.Task, isBody: false);
         }
+    }
+
+    // A child that ran, as opposed to queued work dropped before it started.
+    private void OnChildCompleted(Task task)
+    {
+        _measurements?.ChildCompleted();
+        OnCompleted(task, isBody: false);
     }
 
     private void OnCompleted(Task task, bool isBody)
@@ -527,6 +592,7 @@ public sealed partial class TaskGroup
             }
             failures.Add(exception);
         }
+        _measurements?.Failed();
     }
 
     private void CancelCore(string reason)
@@ -574,14 +640,16 @@ public sealed partial class TaskGroup
             }
         }
 
-        // Read once, so the activity records the same outcome the task ends with.
+        // Read once, so the activity and the metrics record the same outcome the task ends with.
         bool callerCancelled = _callerToken.IsCancellationRequested;
+        string outcome = snapshot is not null ? "failed" : callerCancelled || _bodyCanceled ? "cancelled" : "success";
 
         // Before the result is published, so the activity has ended by the time the caller continues.
         if (_trace is not null)
         {
-            StopActivity(_trace, snapshot, callerCancelled);
+            StopActivity(_trace, snapshot, callerCancelled, outcome);
         }
+        _measurements?.Completed(outcome);
 
         if (snapshot is not null)
         {
@@ -601,7 +669,7 @@ public sealed partial class TaskGroup
         }
     }
 
-    private void StopActivity(Trace trace, Exception[]? failures, bool callerCancelled)
+    private static void StopActivity(Trace trace, Exception[]? failures, bool callerCancelled, string outcome)
     {
         Activity activity = trace.Activity;
         activity.SetTag("taskgroup.children", Volatile.Read(ref trace.Children));
@@ -611,9 +679,9 @@ public sealed partial class TaskGroup
             activity.SetTag("taskgroup.cancelled_by", cancelledBy);
         }
 
+        activity.SetTag("taskgroup.outcome", outcome);
         if (failures is not null)
         {
-            activity.SetTag("taskgroup.outcome", "failed");
             activity.SetStatus(ActivityStatusCode.Error, failures[0].Message);
             foreach (Exception failure in failures)
             {
@@ -625,10 +693,6 @@ public sealed partial class TaskGroup
                     ["exception.stacktrace"] = failure.ToString(),
                 }));
             }
-        }
-        else
-        {
-            activity.SetTag("taskgroup.outcome", callerCancelled || _bodyCanceled ? "cancelled" : "success");
         }
 
         // Stop() may reset Activity.Current; the thread completing the group keeps whatever it had, except the group's

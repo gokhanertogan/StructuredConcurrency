@@ -193,6 +193,181 @@ public class ChannelTests
     }
 
     // ----------------------------------------------------------------------------------------------------------------
+    // ChannelSelect.Send
+
+    [Fact]
+    public async Task Send_WritesWhenThereIsRoom_AndRunsTheHandler()
+    {
+        var output = Channel.CreateBounded<int>(1);
+        bool sent = false;
+
+        bool ran = await new ChannelSelect()
+            .Send(output.Writer, () => 5, () => sent = true)
+            .RunAsync().WaitAsync(Guard);
+
+        Assert.True(ran);
+        Assert.True(sent);
+        Assert.True(output.Reader.TryRead(out int item));
+        Assert.Equal(5, item);
+    }
+
+    [Fact]
+    public async Task Send_WaitsForRoom()
+    {
+        var output = Channel.CreateBounded<int>(1);
+        output.Writer.TryWrite(1);
+        bool sent = false;
+
+        Task<bool> run = new ChannelSelect()
+            .Send(output.Writer, () => 2, () => sent = true)
+            .RunAsync().WaitAsync(Guard);
+
+        Assert.False(run.IsCompleted);
+        Assert.True(output.Reader.TryRead(out _));
+
+        Assert.True(await run);
+        Assert.True(sent);
+        Assert.True(output.Reader.TryRead(out int item));
+        Assert.Equal(2, item);
+    }
+
+    [Fact]
+    public async Task Send_RacesWithReads_AndOnlyOneCaseRuns()
+    {
+        var input = Unbounded<int>();
+        var output = Channel.CreateBounded<int>(1);
+        output.Writer.TryWrite(0);   // full: only the read can run
+        string? ran = null;
+
+        Task<bool> run = new ChannelSelect()
+            .Case(input.Reader, (int _) => ran = "read")
+            .Send(output.Writer, () => 1, () => ran = "send")
+            .RunAsync().WaitAsync(Guard);
+        input.Writer.TryWrite(9);
+
+        Assert.True(await run);
+        Assert.Equal("read", ran);
+        Assert.Equal(1, output.Reader.Count);
+    }
+
+    [Fact]
+    public async Task Send_Disabled_IsSkipped()
+    {
+        var output = Unbounded<int>();
+        bool ranDefault = false;
+
+        bool ran = await new ChannelSelect()
+            .Send(output.Writer, () => throw new InvalidOperationException("must not be asked for"), () => { }, when: () => false)
+            .Default(() => ranDefault = true)
+            .RunAsync().WaitAsync(Guard);
+
+        // A disabled case can never run, so there is nothing left that could make progress.
+        Assert.False(ran);
+        Assert.False(ranDefault);
+        Assert.Equal(0, output.Reader.Count);
+    }
+
+    [Fact]
+    public async Task Send_BuffersBetweenChannels_UntilTheInputCompletesAndTheBufferIsEmpty()
+    {
+        // Go's classic buffer goroutine: the send case is enabled only while there is something to send.
+        var input = Unbounded<int>();
+        var output = Unbounded<int>();
+        var pending = new Queue<int>();
+        var select = new ChannelSelect()
+            .Case(input.Reader, (int item) => pending.Enqueue(item))
+            .Send(output.Writer, () => pending.Peek(), () => pending.Dequeue(), when: () => pending.Count > 0);
+
+        foreach (int item in new[] { 1, 2, 3 })
+        {
+            input.Writer.TryWrite(item);
+        }
+        input.Writer.Complete();
+
+        while (await select.RunAsync().WaitAsync(Guard)) { }
+
+        output.Writer.Complete();
+        Assert.Equal(new[] { 1, 2, 3 }, await output.Reader.ReadAllAsync().ToListAsync());
+    }
+
+    [Fact]
+    public async Task Send_ToACompletedChannel_CountsAsCompleted()
+    {
+        var output = Unbounded<int>();
+        output.Writer.Complete();
+
+        bool ran = await new ChannelSelect()
+            .Send(output.Writer, () => 1, () => throw new InvalidOperationException("not sent"))
+            .RunAsync().WaitAsync(Guard);
+
+        Assert.False(ran);
+    }
+
+    [Fact]
+    public async Task Send_ToACompletedFullChannel_WithADefaultCase_EndsTheLoop()
+    {
+        // A default case means RunAsync never waits, so the case has to find out without waiting.
+        var output = Channel.CreateBounded<int>(1);
+        output.Writer.TryWrite(0);
+        output.Writer.Complete();
+        int defaults = 0;
+
+        bool ran = await new ChannelSelect()
+            .Send(output.Writer, () => 1, () => throw new InvalidOperationException("not sent"))
+            .Default(() => defaults++)
+            .RunAsync().WaitAsync(Guard);
+
+        Assert.False(ran);
+        Assert.Equal(0, defaults);
+    }
+
+    [Fact]
+    public async Task Send_ToAFullChannel_WithADefaultCase_RunsTheDefault_AndLeavesNoWaiter()
+    {
+        var output = Channel.CreateBounded<int>(1);
+        output.Writer.TryWrite(0);
+        int defaults = 0;
+        var select = new ChannelSelect().Send(output.Writer, () => 1, () => { }).Default(() => defaults++);
+
+        Assert.True(await select.RunAsync().WaitAsync(Guard));
+        Assert.True(await select.RunAsync().WaitAsync(Guard));
+        Assert.Equal(2, defaults);
+
+        Assert.True(output.Reader.TryRead(out _));
+        Assert.True(await select.RunAsync().WaitAsync(Guard));
+        Assert.Equal(2, defaults);   // it had room this time, so the send ran
+        Assert.True(output.Reader.TryRead(out int item));
+        Assert.Equal(1, item);
+    }
+
+    [Fact]
+    public async Task Send_ToAChannelCompletedWithAnError_Throws()
+    {
+        var output = Channel.CreateBounded<int>(1);
+        output.Writer.Complete(new Boom());
+        var select = new ChannelSelect().Send(output.Writer, () => 1, () => { });
+
+        await Assert.ThrowsAsync<Boom>(() => select.RunAsync().WaitAsync(Guard));
+        await Assert.ThrowsAsync<Boom>(() => select.RunAsync().WaitAsync(Guard));
+    }
+
+    [Fact]
+    public async Task Send_CallerCancellation_LeavesTheSelectUsable()
+    {
+        var output = Channel.CreateBounded<int>(1);
+        output.Writer.TryWrite(0);
+        var select = new ChannelSelect().Send(output.Writer, () => 1, () => { });
+        using var cts = new CancellationTokenSource();
+
+        Task<bool> run = select.RunAsync(cts.Token);
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => run.WaitAsync(Guard));
+
+        Assert.True(output.Reader.TryRead(out _));
+        Assert.True(await select.RunAsync().WaitAsync(Guard));
+    }
+
+    // ----------------------------------------------------------------------------------------------------------------
     // MergeWith
 
     [Fact]

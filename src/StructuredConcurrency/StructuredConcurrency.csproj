@@ -4,13 +4,18 @@
   <PropertyGroup>
     <PackageId>StructuredConcurrency</PackageId>
     <Title>StructuredConcurrency: TaskGroup and Promise.all / Promise.any for C#</Title>
-    <Description>Structured concurrency for C# and .NET. Run tasks in parallel in a TaskGroup: the first failure cancels the rest, no task outlives the group, and you get the real error instead of a TaskCanceledException. Includes C# equivalents of JavaScript's Promise.all, Promise.any and Promise.allSettled (TaskGroup.AllAsync, AnyAsync and AllSettledAsync), a concurrency limit, timeouts that cancel the work (Kotlin's withTimeout), bounded parallel streams of results, Go's singleflight, Go's select for System.Threading.Channels, and OpenTelemetry tracing.</Description>
-    <PackageTags>async;await;task;tasks;taskgroup;structured-concurrency;concurrency;parallel;cancellation;cancellationtoken;whenall;whenany;promise;promise-all;promise-any;allsettled;fail-fast;errgroup;semaphoreslim;max-concurrency;throttling;channels;go;select;fan-in;fan-out;timeout;withtimeout;singleflight;cache-stampede;as-completed;iasyncenumerable;timeprovider;opentelemetry;tracing;analyzer;roslyn-analyzer</PackageTags>
+    <Description>Structured concurrency for C# and .NET. Run tasks in parallel in a TaskGroup: the first failure cancels the rest, no task outlives the group, and you get the real error instead of a TaskCanceledException. Includes C# equivalents of JavaScript's Promise.all, Promise.any and Promise.allSettled (TaskGroup.AllAsync, AnyAsync and AllSettledAsync), a concurrency limit and rate limiting, timeouts that cancel the work (Kotlin's withTimeout), hedged requests, Erlang-style supervisors that restart failing work, bounded parallel streams of results, chunking by size and time, per-key sequencing, Go's singleflight, Go's select for System.Threading.Channels, and OpenTelemetry tracing and metrics.</Description>
+    <PackageTags>async;await;task;tasks;taskgroup;structured-concurrency;concurrency;parallel;cancellation;cancellationtoken;whenall;whenany;promise;promise-all;promise-any;allsettled;fail-fast;errgroup;semaphoreslim;max-concurrency;throttling;channels;go;select;fan-in;fan-out;timeout;withtimeout;singleflight;cache-stampede;as-completed;iasyncenumerable;timeprovider;opentelemetry;tracing;metrics;hedging;hedged-requests;rate-limiting;ratelimiter;supervisor;restart;backoff;batching;chunk;keyed-lock;analyzer;roslyn-analyzer</PackageTags>
 
     <!-- Fails the pack if the public API breaks compatibility with the last release. -->
     <EnablePackageValidation>true</EnablePackageValidation>
-    <PackageValidationBaselineVersion>0.6.0</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>0.7.0</PackageValidationBaselineVersion>
   </PropertyGroup>
+
+  <!-- For TaskGroupOptions.RateLimiter. Part of ASP.NET Core's shared framework, but not of .NET's. -->
+  <ItemGroup>
+    <PackageReference Include="System.Threading.RateLimiting" Version="8.0.0" />
+  </ItemGroup>
 
   <!-- The analyzers and their code fixes ship in this package, so everyone who uses the library gets them. They are
        built first but not referenced: they run inside the compiler, not in the app. -->
