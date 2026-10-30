@@ -380,10 +380,13 @@ Structured concurrency only works if the work looks at the token it is given. Th
 | `SC0001` | `group.Run(ct => DownloadAsync(url))`: the token is never used | When a sibling fails or the time is up, this download keeps going and the group waits for it |
 | `SC0002` | `group.Run(_ => DownloadAsync(url, cancellationToken))`: an outer token instead of the work's own | Only the caller can cancel it, so a failing sibling, a timeout or `group.Cancel()` doesn't stop it |
 | `SC0003` | `Task.Run(() => DownloadAsync(url));` in a group's body or child, with the task thrown away | The work isn't a child: the group doesn't cancel it, doesn't wait for it, and never sees it fail |
+| `SC0004` | `await Task.WhenAll(GetUserAsync(id, ct), GetOrdersAsync(id, ct))` | When one call fails, the other keeps running and `WhenAll` waits for it, although both take a token that could cancel it |
 
 `SC0001` and `SC0002` check every lambda that StructuredConcurrency passes a token to: `group.Run`, `StartAsync`, `Produce`, `AllAsync`, `AnyAsync`, `AllSettledAsync`, `HedgeAsync`, the timeouts, `SelectConcurrentAsync`, `SingleFlight`, `KeyedSequencer` and `Supervisor`. `SC0002` has a code fix that switches the work to its own token.
 
 `SC0003` checks `Task.Run`, `Task.Factory.StartNew` and `ThreadPool.QueueUserWorkItem` calls whose task is thrown away, in a group's body, in its children and in methods that take a `TaskGroup`. Awaiting or returning the task is fine. Its code fix turns `Task.Run(() => WorkAsync())` into `group.Run(ct => WorkAsync())`; then pass `ct` on. Unlike `Task.Run`, `group.Run` starts the work on the calling thread, which is what you want for work that awaits I/O. For work that computes for a while before its first `await`, keep the thread-pool hop instead: `group.Run(ct => Task.Run(() => WorkAsync(ct), ct))`.
+
+`SC0004` is a suggestion (severity Info), not a warning, because sometimes every operation should run to the end. It reports `Task.WhenAll` over two or more operations that each take a cancellation token, written in the call or kept in locals. Its code fix turns `await Task.WhenAll(SaveAsync(a, ct), SaveAsync(b, ct))` into a `TaskGroup.RunAsync` with one child per call, when every call passes the same token and nobody uses `WhenAll`'s results. Where the results are used, switch to `TaskGroup.AllAsync` by hand.
 
 > **Upgrading from 0.7:** `SC0003` is new, so a build with `TreatWarningsAsErrors` can stop at code it now reports. Fix it, or set its severity in `.editorconfig` as shown below. The package now depends on `System.Threading.RateLimiting`, which ASP.NET Core apps already have.
 
@@ -606,7 +609,7 @@ When children do real asynchronous work, TaskGroup takes about as long as the ha
 
 ## Status
 
-Version 0.8 includes:
+Version 0.9 includes:
 
 - `TaskGroup.RunAsync`, `Run`, `StartAsync`, `Cancel` and `TaskGroupOptions` (with `CancelOnFailure`, `MaxConcurrency`, `RateLimiter` and `Name`)
 - `AllAsync`, `AnyAsync`, `AllSettledAsync`, `HedgeAsync` and `TaskOutcome<T>`
@@ -616,7 +619,7 @@ Version 0.8 includes:
 - `SelectConcurrentAsync`, over a collection or an `IAsyncEnumerable`, `ChunkAsync`, `SingleFlight<TKey, TValue>` and `KeyedSequencer<TKey>`
 - in `StructuredConcurrency.Channels`: `ChannelSelect` (with send cases), `MergeWith`, `BroadcastAsync` and `group.Produce`
 - in the `StructuredConcurrency.Hosting` package: `StructuredBackgroundService`, with an optional `RestartPolicy`
-- the `SC0001`, `SC0002` and `SC0003` analyzers, with code fixes for `SC0002` and `SC0003`
+- the `SC0001`, `SC0002`, `SC0003` and `SC0004` analyzers, with code fixes for `SC0002`, `SC0003` and `SC0004`
 
 The API may change before 1.0, but each release is checked against the previous one with package validation, so a breaking change is always deliberate.
 

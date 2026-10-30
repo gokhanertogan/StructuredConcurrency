@@ -11,6 +11,8 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      # For NuGet trusted publishing: the job proves to nuget.org which repo and workflow it is.
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -28,10 +30,16 @@ jobs:
           fi
       - run: dotnet pack src/StructuredConcurrency -c Release -o artifacts
       - run: dotnet pack src/StructuredConcurrency.Hosting -c Release -o artifacts
+      # Trusted publishing: trades the job's OIDC token for an API key that expires within the hour, so there is no
+      # long-lived key to store or renew. The policy on nuget.org names this repo and release.yml.
+      - uses: NuGet/login@v1
+        id: nuget-login
+        with:
+          user: GokhanErtogan
       # Also pushes the .snupkg symbols package next to each .nupkg.
       - run: dotnet nuget push "artifacts/*.nupkg" --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
         env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+          NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
       - run: gh release create "$GITHUB_REF_NAME" artifacts/* --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}

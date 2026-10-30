@@ -1,3 +1,11 @@
+## Release 0.9.0
+
+### New Rules
+
+Rule ID | Category | Severity | Notes
+--------|----------|----------|-------
+SC0004 | Reliability | Info | Task.WhenAll over cancellable operations doesn't cancel the rest when one fails
+
 ## Release 0.8.0
 
 ### New Rules

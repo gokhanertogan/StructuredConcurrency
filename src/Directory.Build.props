@@ -10,10 +10,11 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <IsAotCompatible>true</IsAotCompatible>
 
-    <Version>0.8.0</Version>
+    <Version>0.9.0</Version>
     <Authors>Gokhan Ertogan</Authors>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageIcon>icon.png</PackageIcon>
     <Copyright>Copyright (c) 2026 Gokhan Ertogan</Copyright>
     <PackageProjectUrl>https://github.com/gokhanertogan/StructuredConcurrency</PackageProjectUrl>
     <RepositoryUrl>https://github.com/gokhanertogan/StructuredConcurrency</RepositoryUrl>
@@ -28,7 +29,9 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <None Include="$(MSBuildThisFileDirectory)..\README.md" Pack="true" PackagePath="\" />
+    <!-- NuGet gets a short README of its own; the full one on GitHub is too long for a package page. -->
+    <None Include="$(MSBuildThisFileDirectory)..\docs\nuget-readme.md" Pack="true" PackagePath="\README.md" />
+    <None Include="$(MSBuildThisFileDirectory)..\docs\assets\icon.png" Pack="true" PackagePath="\" />
   </ItemGroup>
 
 </Project>
