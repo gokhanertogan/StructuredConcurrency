@@ -148,7 +148,7 @@ public sealed partial class TaskGroup
     {
         var state = new HedgeState<T>(maxAttempts);
 
-        // As in AnyAsync, a failing attempt doesn't fail the group; only the caller's cancellation ends it early.
+        // As in FirstSuccessAsync, a failing attempt doesn't fail the group; only the caller's cancellation ends it early.
         await RunAsync(async group =>
         {
             for (int attempt = 0; attempt < maxAttempts; attempt++)

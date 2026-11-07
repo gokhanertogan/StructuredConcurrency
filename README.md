@@ -29,7 +29,7 @@ var (user, orders) = await TaskGroup.AllAsync(
     ct => GetOrdersAsync(id, ct));
 ```
 
-**`Promise.any` → `TaskGroup.AnyAsync`.** Take the first task that succeeds; the others are cancelled.
+**`Promise.any` → `TaskGroup.FirstSuccessAsync`.** Take the first task that succeeds; the others are cancelled.
 
 ```js
 // JavaScript
@@ -38,8 +38,10 @@ const data = await Promise.any(mirrors.map(m => m.download(path)));
 
 ```csharp
 // C#
-string data = await TaskGroup.AnyAsync(mirrors, (mirror, ct) => mirror.DownloadAsync(path, ct));
+string data = await TaskGroup.FirstSuccessAsync(mirrors, (mirror, ct) => mirror.DownloadAsync(path, ct));
 ```
+
+> **Upgrading from 0.9:** `TaskGroup.AnyAsync` is now `TaskGroup.FirstSuccessAsync`, with the same overloads and behavior. The old name looked too much like `Task.WhenAny`, which returns the first task to *complete*, even a failed one. There is no alias, so rename the calls.
 
 **`Promise.allSettled` → `TaskGroup.AllSettledAsync`.** Run every task to completion and look at each outcome.
 
@@ -56,7 +58,7 @@ TaskOutcome<Receipt>[] results = await TaskGroup.AllSettledAsync(orders, (order,
 | JavaScript | StructuredConcurrency | Built-in .NET, and what it doesn't do |
 | --- | --- | --- |
 | `Promise.all` | `TaskGroup.AllAsync` | `Task.WhenAll` doesn't cancel the other tasks when one fails |
-| `Promise.any` | `TaskGroup.AnyAsync` | No equivalent. `Task.WhenAny` returns the first task to complete, even if it failed |
+| `Promise.any` | `TaskGroup.FirstSuccessAsync` | No equivalent. `Task.WhenAny` returns the first task to complete, even if it failed |
 | `Promise.allSettled` | `TaskGroup.AllSettledAsync` | `Task.WhenAll`, then inspect each task by hand |
 | `Promise.race` | Not needed | `Task.WhenAny` |
 
@@ -79,7 +81,7 @@ The hand-written version cancels correctly but reports the wrong error: it await
 | --- | --- | --- | --- |
 | `Task.WhenAny` | A's error, even though B would succeed | 104 ms | B and C, with nobody waiting |
 | `Task.WhenEach` + skip failures | B's data | 301 ms | C, with nobody waiting |
-| `TaskGroup.AnyAsync` | B's data | 334 ms | None: C is cancelled |
+| `TaskGroup.FirstSuccessAsync` | B's data | 334 ms | None: C is cancelled |
 
 See [`samples/AnyVsWhenAny`](samples/AnyVsWhenAny/Program.cs).
 
@@ -198,6 +200,23 @@ User? cached = await TaskGroup.WithTimeoutOrDefaultAsync(TimeSpan.FromMillisecon
 bool finished = await TaskGroup.TryWithTimeoutAsync(TimeSpan.FromSeconds(30), ct => WarmUpAsync(ct));
 ```
 
+There is no magic here: `WithTimeoutAsync` is a timer `CancellationTokenSource` linked to your token, plus a filter that turns only the timer's cancellation into a `TimeoutException`. Written by hand, it is:
+
+```csharp
+using var timer = new CancellationTokenSource(timeout, timeProvider);
+using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timer.Token);
+try
+{
+    return await LoadUserAsync(id, linked.Token);
+}
+catch (OperationCanceledException ex) when (timer.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+{
+    throw new TimeoutException($"The operation did not complete within {timeout}.", ex);
+}
+```
+
+If you'd rather see that in your code, write it inline. The hand-written versions usually skip the linked token or the filter, and then a timeout shows up as a `TaskCanceledException` you can't tell apart from a cancelled request.
+
 To put a deadline on a whole group, wrap it: `TaskGroup.WithTimeoutAsync(timeout, ct => TaskGroup.RunAsync(body, ct))`. Only a cancellation that comes from the timer becomes a `TimeoutException`. Your own token's cancellation, or a timeout inside the operation, comes through unchanged. See [`samples/TimeoutVsWaitAsync`](samples/TimeoutVsWaitAsync/Program.cs) for the three approaches side by side.
 
 Every timeout method also takes a `TimeProvider`, and so does `new ChannelSelect(timeProvider)`. Pass a `FakeTimeProvider` in tests and time passes only when you advance it:
@@ -222,7 +241,7 @@ Product product = await TaskGroup.HedgeAsync(TimeSpan.FromMilliseconds(50), ct =
 string page = await TaskGroup.HedgeAsync(TimeSpan.FromMilliseconds(100), (attempt, ct) => replicas[attempt].GetAsync(path, ct), maxAttempts: replicas.Length);
 ```
 
-When every attempt that is running has failed, the next one starts at once instead of after the delay; with `Timeout.InfiniteTimeSpan` as the delay, attempts start only on failure. If every attempt fails, you get an `AggregateException` with each failure, as with `AnyAsync`. Only hedge operations that are safe to run twice, such as reads.
+When every attempt that is running has failed, the next one starts at once instead of after the delay; with `Timeout.InfiniteTimeSpan` as the delay, attempts start only on failure. If every attempt fails, you get an `AggregateException` with each failure, as with `FirstSuccessAsync`. Only hedge operations that are safe to run twice, such as reads.
 
 ## Start a task and wait until it's ready
 
@@ -352,7 +371,7 @@ Each group's activity has these tags:
 - `taskgroup.outcome`: `success`, `failed` or `cancelled`.
 - `taskgroup.cancelled_by`: `failure`, `caller` or `Cancel`, when it was cancelled.
 
-A failed group has error status and one `exception` event per failure, so a trace shows which child failed and which ones were cancelled because of it. `AllAsync`, `AnyAsync` and `AllSettledAsync` name their groups after themselves. Set `EnableTracing = false` on a group you don't want traced. With no listener, `ActivitySource` creates nothing.
+A failed group has error status and one `exception` event per failure, so a trace shows which child failed and which ones were cancelled because of it. `AllAsync`, `FirstSuccessAsync` and `AllSettledAsync` name their groups after themselves. Set `EnableTracing = false` on a group you don't want traced. With no listener, `ActivitySource` creates nothing.
 
 ## Metrics
 
@@ -382,7 +401,7 @@ Structured concurrency only works if the work looks at the token it is given. Th
 | `SC0003` | `Task.Run(() => DownloadAsync(url));` in a group's body or child, with the task thrown away | The work isn't a child: the group doesn't cancel it, doesn't wait for it, and never sees it fail |
 | `SC0004` | `await Task.WhenAll(GetUserAsync(id, ct), GetOrdersAsync(id, ct))` | When one call fails, the other keeps running and `WhenAll` waits for it, although both take a token that could cancel it |
 
-`SC0001` and `SC0002` check every lambda that StructuredConcurrency passes a token to: `group.Run`, `StartAsync`, `Produce`, `AllAsync`, `AnyAsync`, `AllSettledAsync`, `HedgeAsync`, the timeouts, `SelectConcurrentAsync`, `SingleFlight`, `KeyedSequencer` and `Supervisor`. `SC0002` has a code fix that switches the work to its own token.
+`SC0001` and `SC0002` check every lambda that StructuredConcurrency passes a token to: `group.Run`, `StartAsync`, `Produce`, `AllAsync`, `FirstSuccessAsync`, `AllSettledAsync`, `HedgeAsync`, the timeouts, `SelectConcurrentAsync`, `SingleFlight`, `KeyedSequencer` and `Supervisor`. `SC0002` has a code fix that switches the work to its own token.
 
 `SC0003` checks `Task.Run`, `Task.Factory.StartNew` and `ThreadPool.QueueUserWorkItem` calls whose task is thrown away, in a group's body, in its children and in methods that take a `TaskGroup`. Awaiting or returning the task is fine. Its code fix turns `Task.Run(() => WorkAsync())` into `group.Run(ct => WorkAsync())`; then pass `ct` on. Unlike `Task.Run`, `group.Run` starts the work on the calling thread, which is what you want for work that awaits I/O. For work that computes for a while before its first `await`, keep the thread-pool hop instead: `group.Run(ct => Task.Run(() => WorkAsync(ct), ct))`.
 
@@ -493,7 +512,7 @@ await TaskGroup.RunAsync(async group =>
 | Kotlin | `coroutineScope { }` | `TaskGroup.RunAsync` |
 | Kotlin | `supervisorScope { }` | `TaskGroup.RunAsync` with `new TaskGroupOptions { CancelOnFailure = false }` |
 | Swift | `withThrowingTaskGroup` | `TaskGroup.RunAsync` |
-| Java 21+ | `StructuredTaskScope` | `TaskGroup.RunAsync`, `TaskGroup.AnyAsync` |
+| Java 21+ | `StructuredTaskScope` | `TaskGroup.RunAsync`, `TaskGroup.FirstSuccessAsync` |
 | Go | `errgroup.WithContext` | `TaskGroup.RunAsync`, `TaskGroup.AllAsync` |
 | Go | `errgroup.SetLimit` | `new TaskGroupOptions { MaxConcurrency = n }` |
 | Go | `select { case ... }` | `ChannelSelect` |
@@ -530,7 +549,7 @@ Use `TaskGroup.AllAsync` for a fixed set of tasks, or `TaskGroup.RunAsync` for a
 
 ### What is the C# equivalent of Promise.any?
 
-`TaskGroup.AnyAsync`. It returns the first successful result and cancels the rest. If every task fails, it throws an `AggregateException` with all the failures, the same as JavaScript's `AggregateError`. `Task.WhenAny` isn't an equivalent: it is `Promise.race`.
+`TaskGroup.FirstSuccessAsync`. It returns the first successful result and cancels the rest. If every task fails, it throws an `AggregateException` with all the failures, the same as JavaScript's `AggregateError`. `Task.WhenAny` isn't an equivalent: it is `Promise.race`.
 
 ### Why does Task.WhenAll wait for all tasks after one has failed?
 
@@ -605,14 +624,14 @@ The benchmark compares TaskGroup with the code it replaces: a hand-written `Canc
 | 10 | synchronously | 106 ns | 194 ns | 224 B | 264 B |
 | 100 | synchronously | 950 ns | 1,350 ns | 944 B | 264 B |
 
-When children do real asynchronous work, TaskGroup takes about as long as the hand-written code for a few children and up to 17% longer for 100 in this run (these numbers move by about ±10% between runs), and allocates 15–20% less. When children complete synchronously, it costs about 4 ns more per child, but its allocation stays at 264 B regardless of the number of children. The numbers include the checks for tracing and metrics; with no listener subscribed, neither records anything. `AnyAsync` over three operations takes 3.6 μs, against 6.2 μs for a hand-written `Task.WhenEach` loop, but allocates 1,879 B against 926 B.
+When children do real asynchronous work, TaskGroup takes about as long as the hand-written code for a few children and up to 17% longer for 100 in this run (these numbers move by about ±10% between runs), and allocates 15–20% less. When children complete synchronously, it costs about 4 ns more per child, but its allocation stays at 264 B regardless of the number of children. The numbers include the checks for tracing and metrics; with no listener subscribed, neither records anything. `FirstSuccessAsync` over three operations takes 3.6 μs, against 6.2 μs for a hand-written `Task.WhenEach` loop, but allocates 1,879 B against 926 B.
 
 ## Status
 
-Version 0.9 includes:
+Version 0.10 includes:
 
 - `TaskGroup.RunAsync`, `Run`, `StartAsync`, `Cancel` and `TaskGroupOptions` (with `CancelOnFailure`, `MaxConcurrency`, `RateLimiter` and `Name`)
-- `AllAsync`, `AnyAsync`, `AllSettledAsync`, `HedgeAsync` and `TaskOutcome<T>`
+- `AllAsync`, `FirstSuccessAsync`, `AllSettledAsync`, `HedgeAsync` and `TaskOutcome<T>`
 - `WithTimeoutAsync`, `WithTimeoutOrDefaultAsync` and `TryWithTimeoutAsync`, with or without a `TimeProvider`
 - `Supervisor.RunAsync`, `Supervisor.RunGroupAsync` and `RestartPolicy`
 - OpenTelemetry tracing through the `TaskGroup.ActivitySourceName` source, and metrics through the `TaskGroup.MeterName` meter
@@ -624,6 +643,10 @@ Version 0.9 includes:
 The API may change before 1.0, but each release is checked against the previous one with package validation, so a breaking change is always deliberate.
 
 Targets .NET 8 and later, and is trimming and NativeAOT compatible.
+
+## Contributing
+
+Issues and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) explains how to build and test the project, how the public API and analyzers are tracked, and what a pull request needs. Report security issues privately, as described in [SECURITY.md](SECURITY.md).
 
 ## License
 

@@ -178,14 +178,14 @@ public sealed class TracingTests : IDisposable
         using (s_work.StartActivity(marker))
         {
             await TaskGroup.AllAsync(_ => Task.FromResult(1), _ => Task.FromResult(2));
-            await TaskGroup.AnyAsync(_ => Task.FromResult(1), _ => Task.FromResult(2));
+            await TaskGroup.FirstSuccessAsync(_ => Task.FromResult(1), _ => Task.FromResult(2));
             await TaskGroup.AllSettledAsync(new[] { 1, 2 }, (i, _) => Task.FromResult(i), maxConcurrency: 1);
         }
 
         ActivityTraceId trace = _stopped.Single(activity => activity.DisplayName == marker).TraceId;
         string[] names = _stopped.Where(activity => activity.TraceId == trace && activity.Source.Name == TaskGroup.ActivitySourceName)
             .Select(activity => activity.DisplayName).OrderBy(n => n).ToArray();
-        Assert.Equal(["TaskGroup.AllAsync", "TaskGroup.AllSettledAsync", "TaskGroup.AnyAsync"], names);
+        Assert.Equal(["TaskGroup.AllAsync", "TaskGroup.AllSettledAsync", "TaskGroup.FirstSuccessAsync"], names);
     }
 
     [Fact]

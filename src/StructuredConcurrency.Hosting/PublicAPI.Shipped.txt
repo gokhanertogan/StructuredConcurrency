@@ -1,0 +1,7 @@
+#nullable enable
+abstract StructuredConcurrency.Hosting.StructuredBackgroundService.ExecuteAsync(StructuredConcurrency.TaskGroup! group) -> System.Threading.Tasks.Task!
+override sealed StructuredConcurrency.Hosting.StructuredBackgroundService.ExecuteAsync(System.Threading.CancellationToken stoppingToken) -> System.Threading.Tasks.Task!
+StructuredConcurrency.Hosting.StructuredBackgroundService
+StructuredConcurrency.Hosting.StructuredBackgroundService.StructuredBackgroundService() -> void
+virtual StructuredConcurrency.Hosting.StructuredBackgroundService.Options.get -> StructuredConcurrency.TaskGroupOptions!
+virtual StructuredConcurrency.Hosting.StructuredBackgroundService.RestartPolicy.get -> StructuredConcurrency.RestartPolicy?

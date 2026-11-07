@@ -6,7 +6,7 @@ public sealed partial class TaskGroup
 {
     // Each policy names its group, so its tracing activity says which policy ran.
     private static readonly TaskGroupOptions s_allOptions = new() { Name = "TaskGroup.AllAsync" };
-    private static readonly TaskGroupOptions s_anyOptions = new() { Name = "TaskGroup.AnyAsync" };
+    private static readonly TaskGroupOptions s_firstSuccessOptions = new() { Name = "TaskGroup.FirstSuccessAsync" };
     private static readonly TaskGroupOptions s_allSettledOptions = new() { Name = "TaskGroup.AllSettledAsync" };
 
     // ---------------------------------------------------------------------------------------------------------------
@@ -155,14 +155,14 @@ public sealed partial class TaskGroup
     /// <param name="cancellationToken">Cancels both operations.</param>
     /// <returns>The first successful result.</returns>
     /// <exception cref="AggregateException">Every operation failed; holds the failures in input order.</exception>
-    public static Task<T> AnyAsync<T>(
+    public static Task<T> FirstSuccessAsync<T>(
         Func<CancellationToken, Task<T>> first,
         Func<CancellationToken, Task<T>> second,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(first);
         ArgumentNullException.ThrowIfNull(second);
-        return AnyCore(new[] { first, second }, static (operation, ct) => operation(ct), cancellationToken);
+        return FirstSuccessCore(new[] { first, second }, static (operation, ct) => operation(ct), cancellationToken);
     }
 
     /// <summary>
@@ -175,7 +175,7 @@ public sealed partial class TaskGroup
     /// <param name="cancellationToken">Cancels all operations.</param>
     /// <returns>The first successful result.</returns>
     /// <exception cref="AggregateException">Every operation failed; holds the failures in input order.</exception>
-    public static Task<T> AnyAsync<T>(
+    public static Task<T> FirstSuccessAsync<T>(
         Func<CancellationToken, Task<T>> first,
         Func<CancellationToken, Task<T>> second,
         Func<CancellationToken, Task<T>> third,
@@ -184,7 +184,7 @@ public sealed partial class TaskGroup
         ArgumentNullException.ThrowIfNull(first);
         ArgumentNullException.ThrowIfNull(second);
         ArgumentNullException.ThrowIfNull(third);
-        return AnyCore(new[] { first, second, third }, static (operation, ct) => operation(ct), cancellationToken);
+        return FirstSuccessCore(new[] { first, second, third }, static (operation, ct) => operation(ct), cancellationToken);
     }
 
     /// <summary>
@@ -196,7 +196,7 @@ public sealed partial class TaskGroup
     /// <returns>The first successful result.</returns>
     /// <exception cref="ArgumentException"><paramref name="operations"/> is empty.</exception>
     /// <exception cref="AggregateException">Every operation failed; holds the failures in input order.</exception>
-    public static Task<T> AnyAsync<T>(
+    public static Task<T> FirstSuccessAsync<T>(
         IEnumerable<Func<CancellationToken, Task<T>>> operations,
         CancellationToken cancellationToken = default)
     {
@@ -206,7 +206,7 @@ public sealed partial class TaskGroup
         {
             throw new ArgumentException("At least one operation is required.", nameof(operations));
         }
-        return AnyCore(items, static (operation, ct) => operation(ct), cancellationToken);
+        return FirstSuccessCore(items, static (operation, ct) => operation(ct), cancellationToken);
     }
 
     /// <summary>
@@ -221,7 +221,7 @@ public sealed partial class TaskGroup
     /// <returns>The first successful result.</returns>
     /// <exception cref="ArgumentException"><paramref name="source"/> is empty.</exception>
     /// <exception cref="AggregateException">Every operation failed; holds the failures in input order.</exception>
-    public static Task<TResult> AnyAsync<TSource, TResult>(
+    public static Task<TResult> FirstSuccessAsync<TSource, TResult>(
         IEnumerable<TSource> source,
         Func<TSource, CancellationToken, Task<TResult>> operation,
         CancellationToken cancellationToken = default)
@@ -233,10 +233,10 @@ public sealed partial class TaskGroup
         {
             throw new ArgumentException("At least one item is required.", nameof(source));
         }
-        return AnyCore(items, operation, cancellationToken);
+        return FirstSuccessCore(items, operation, cancellationToken);
     }
 
-    private static async Task<TResult> AnyCore<TSource, TResult>(
+    private static async Task<TResult> FirstSuccessCore<TSource, TResult>(
         TSource[] items,
         Func<TSource, CancellationToken, Task<TResult>> operation,
         CancellationToken cancellationToken)
@@ -268,7 +268,7 @@ public sealed partial class TaskGroup
                 });
             }
             return Task.CompletedTask;
-        }, s_anyOptions, cancellationToken).ConfigureAwait(false);
+        }, s_firstSuccessOptions, cancellationToken).ConfigureAwait(false);
 
         if (state.Won == 1)
         {

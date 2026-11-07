@@ -97,7 +97,7 @@ public class ChildTokenAnalyzerTests
     public Task EveryApiThatPassesAToken_IsChecked() => VerifyAsync("""
         int[] items = { 1, 2 };
         await TaskGroup.AllAsync({|SC0001:a|} => Get(1, default), {|SC0001:b|} => Get(2, default));
-        await TaskGroup.AnyAsync(items, (item, {|SC0001:ct|}) => Get(item, default));
+        await TaskGroup.FirstSuccessAsync(items, (item, {|SC0001:ct|}) => Get(item, default));
         await TaskGroup.AllSettledAsync(items, (item, {|SC0001:ct|}) => Get(item, default), maxConcurrency: 1);
         await TaskGroup.WithTimeoutAsync(TimeSpan.FromSeconds(1), {|SC0001:ct|} => Work());
         await new SingleFlight<string, int>().RunAsync("k", {|SC0001:ct|} => Get(1, default));

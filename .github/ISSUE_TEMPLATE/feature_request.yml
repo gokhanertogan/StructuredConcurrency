@@ -1,0 +1,22 @@
+name: Feature or API change
+description: A new feature, or a change to the public API.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do, and why the current API makes it hard.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed API
+      description: How you would like the code to look.
+      render: csharp
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you do today
+      description: Your current workaround, if you have one.

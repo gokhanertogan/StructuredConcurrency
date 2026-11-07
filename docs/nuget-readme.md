@@ -17,7 +17,7 @@ var (user, orders) = await TaskGroup.AllAsync(
     ct => GetOrdersAsync(id, ct));
 
 // Promise.any: the first success; the others are cancelled
-string data = await TaskGroup.AnyAsync(mirrors, (mirror, ct) => mirror.DownloadAsync(path, ct));
+string data = await TaskGroup.FirstSuccessAsync(mirrors, (mirror, ct) => mirror.DownloadAsync(path, ct));
 
 // Promise.allSettled: every outcome
 TaskOutcome<Receipt>[] results = await TaskGroup.AllSettledAsync(orders, (order, ct) => ChargeAsync(order, ct));

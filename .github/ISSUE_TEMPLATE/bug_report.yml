@@ -1,0 +1,33 @@
+name: Bug report
+description: Something behaves differently from what the docs say, or not at all.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Repro
+      description: The smallest code that shows the problem.
+      render: csharp
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Package version
+      placeholder: "0.10.0"
+    validations:
+      required: true
+  - type: input
+    id: dotnet
+    attributes:
+      label: .NET version and OS
+      placeholder: ".NET 10, Windows 11"
+    validations:
+      required: true

@@ -69,12 +69,12 @@ clock.Restart();
 await Task.Delay(2100);
 
 // ---------------------------------------------------------------------------------------------
-Console.WriteLine("\nTO-BE: TaskGroup.AnyAsync returns the first SUCCESS and cancels the rest");
+Console.WriteLine("\nTO-BE: TaskGroup.FirstSuccessAsync returns the first SUCCESS and cancels the rest");
 clock.Restart();
-string data = await TaskGroup.AnyAsync(
+string data = await TaskGroup.FirstSuccessAsync(
     ct => Mirror("A", 100, fails: true, ct),
     ct => Mirror("B", 300, fails: false, ct),
     ct => Mirror("C", 2000, fails: false, ct));
 Log("Caller", $"result: {data}");
 await Task.Delay(2100); // nothing else will be logged: no work was left behind
-Console.WriteLine("\n(no background activity after AnyAsync returned)");
+Console.WriteLine("\n(no background activity after FirstSuccessAsync returned)");

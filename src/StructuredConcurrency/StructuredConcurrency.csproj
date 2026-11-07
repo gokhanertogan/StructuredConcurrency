@@ -4,15 +4,27 @@
   <PropertyGroup>
     <PackageId>StructuredConcurrency</PackageId>
     <Title>StructuredConcurrency: TaskGroup and Promise.all / Promise.any for C#</Title>
-    <Description>Structured concurrency for C# and .NET. Run tasks in parallel in a TaskGroup: the first failure cancels the rest, no task outlives the group, and you get the real error instead of a TaskCanceledException. Includes C# equivalents of JavaScript's Promise.all, Promise.any and Promise.allSettled (TaskGroup.AllAsync, AnyAsync and AllSettledAsync), a concurrency limit and rate limiting, timeouts that cancel the work (Kotlin's withTimeout), hedged requests, Erlang-style supervisors that restart failing work, bounded parallel streams of results, chunking by size and time, per-key sequencing, Go's singleflight, Go's select for System.Threading.Channels, and OpenTelemetry tracing and metrics.</Description>
+    <Description>Structured concurrency for C# and .NET. Run tasks in parallel in a TaskGroup: the first failure cancels the rest, no task outlives the group, and you get the real error instead of a TaskCanceledException. Includes C# equivalents of JavaScript's Promise.all, Promise.any and Promise.allSettled (TaskGroup.AllAsync, FirstSuccessAsync and AllSettledAsync), a concurrency limit and rate limiting, timeouts that cancel the work (Kotlin's withTimeout), hedged requests, Erlang-style supervisors that restart failing work, bounded parallel streams of results, chunking by size and time, per-key sequencing, Go's singleflight, Go's select for System.Threading.Channels, and OpenTelemetry tracing and metrics.</Description>
     <PackageTags>async;await;task;tasks;taskgroup;structured-concurrency;concurrency;parallel;cancellation;cancellationtoken;whenall;whenany;promise;promise-all;promise-any;allsettled;fail-fast;errgroup;semaphoreslim;max-concurrency;throttling;channels;go;select;fan-in;fan-out;timeout;withtimeout;singleflight;cache-stampede;as-completed;iasyncenumerable;timeprovider;opentelemetry;tracing;metrics;hedging;hedged-requests;rate-limiting;ratelimiter;supervisor;restart;backoff;batching;chunk;keyed-lock;analyzer;roslyn-analyzer</PackageTags>
 
     <!-- Fails the pack if the public API breaks compatibility with the last release. -->
     <EnablePackageValidation>true</EnablePackageValidation>
-    <PackageValidationBaselineVersion>0.8.0</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>0.9.0</PackageValidationBaselineVersion>
+
+    <!-- RS0026/RS0027 are API design rules about optional parameters on overloads. The API already shipped that way;
+         only the tracking rules are wanted. -->
+    <NoWarn>$(NoWarn);RS0026;RS0027</NoWarn>
   </PropertyGroup>
 
   <!-- For TaskGroupOptions.RateLimiter. Part of ASP.NET Core's shared framework, but not of .NET's. -->
+  <!-- Records the public API in PublicAPI.Shipped.txt and PublicAPI.Unshipped.txt, so a change to it shows up in review and
+       has to be made on purpose. -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.PublicApiAnalyzers" Version="5.0.0" PrivateAssets="all" />
+    <AdditionalFiles Include="PublicAPI.Shipped.txt" />
+    <AdditionalFiles Include="PublicAPI.Unshipped.txt" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="System.Threading.RateLimiting" Version="8.0.0" />
   </ItemGroup>

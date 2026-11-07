@@ -109,6 +109,6 @@ public class FirstSuccess
         return winner ?? throw new AggregateException(failures);
     }
 
-    [Benchmark(Description = "TaskGroup.AnyAsync")]
-    public Task<int> Group() => TaskGroup.AnyAsync(s_operations);
+    [Benchmark(Description = "TaskGroup.FirstSuccessAsync")]
+    public Task<int> Group() => TaskGroup.FirstSuccessAsync(s_operations);
 }
