@@ -159,6 +159,83 @@ public class ChildTokenAnalyzerTests
         """);
 
     [Fact]
+    public Task GroupBody_WaitingOnAnOuterToken_IsReported_AndFixedToTheGroupsToken() => VerifyAsync(
+        """
+        var reader = System.Threading.Channels.Channel.CreateUnbounded<int>().Reader;
+        await TaskGroup.RunAsync(async group =>
+        {
+            await foreach (int item in reader.ReadAllAsync({|SC0002:cancellationToken|}))
+            {
+                group.Run(ct => Get(item, ct));
+            }
+            await Task.Delay(10, cancellationToken);
+        }, cancellationToken);
+        """,
+        """
+        var reader = System.Threading.Channels.Channel.CreateUnbounded<int>().Reader;
+        await TaskGroup.RunAsync(async group =>
+        {
+            await foreach (int item in reader.ReadAllAsync(group.CancellationToken))
+            {
+                group.Run(ct => Get(item, ct));
+            }
+            await Task.Delay(10, group.CancellationToken);
+        }, cancellationToken);
+        """);
+
+    [Fact]
+    public Task GroupBody_NamedDiscard_IsRenamedByTheFix() => VerifyAsync(
+        """
+        await TaskGroup.RunAsync(async _ => await Work({|SC0002:cancellationToken|}), cancellationToken);
+        """,
+        """
+        await TaskGroup.RunAsync(async group => await Work(group.CancellationToken), cancellationToken);
+        """);
+
+    [Fact]
+    public Task GroupBody_UsingItsOwnTokenOrNone_IsNotReported() => VerifyAsync(
+        """
+        await TaskGroup.RunAsync(async group =>
+        {
+            await Work(group.CancellationToken);
+            CancellationToken own = group.CancellationToken;
+            await Work(own);
+            await Work(CancellationToken.None);
+        }, cancellationToken);
+        await TaskGroup.RunAsync(group =>
+        {
+            group.Run(ct => Work(ct));
+            return Task.CompletedTask;
+        }, cancellationToken);
+        """);
+
+    [Fact]
+    public Task OuterTokenInAChild_IsReportedOnTheChildOnly() => VerifyAsync(
+        """
+        await TaskGroup.RunAsync(async group =>
+        {
+            await Task.Yield();
+            group.Run(ct => Work({|SC0002:cancellationToken|}));
+        }, cancellationToken);
+        """,
+        """
+        await TaskGroup.RunAsync(async group =>
+        {
+            await Task.Yield();
+            group.Run(ct => Work(ct));
+        }, cancellationToken);
+        """);
+
+    [Fact]
+    public Task SupervisedGroupBody_IsChecked() => VerifyAsync(
+        """
+        await Supervisor.RunGroupAsync(async group => await Work({|SC0002:cancellationToken|}), RestartPolicy.Default, cancellationToken: cancellationToken);
+        """,
+        """
+        await Supervisor.RunGroupAsync(async group => await Work(group.CancellationToken), RestartPolicy.Default, cancellationToken: cancellationToken);
+        """);
+
+    [Fact]
     public Task FieldsAndOuterSourceTokens_AreReported() => VerifyAsync(
         """
         using var cts = new CancellationTokenSource();

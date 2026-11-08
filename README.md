@@ -344,6 +344,10 @@ await Supervisor.RunGroupAsync(group =>
 }, policy, cancellationToken: cancellationToken);
 ```
 
+`OnRestart` receives a `RestartEvent` with the failure, the restart's number (`RestartNumber`, counting from 1) and the delay before it.
+
+> **Upgrading from 0.9:** `RestartEvent.Restart` is now `RestartNumber`. There is no alias, so rename the uses.
+
 Cancelling the token stops the work and the wait before a restart. Once it is cancelled, nothing is restarted, whatever the work throws on its way out. The next run starts only after the previous one has ended, so nothing runs twice at once. In a `StructuredBackgroundService`, override `RestartPolicy` and the service's work starts again in a new group when it fails, instead of stopping the service:
 
 ```csharp
@@ -397,15 +401,33 @@ Structured concurrency only works if the work looks at the token it is given. Th
 | Rule | Catches | Why it matters |
 | --- | --- | --- |
 | `SC0001` | `group.Run(ct => DownloadAsync(url))`: the token is never used | When a sibling fails or the time is up, this download keeps going and the group waits for it |
-| `SC0002` | `group.Run(_ => DownloadAsync(url, cancellationToken))`: an outer token instead of the work's own | Only the caller can cancel it, so a failing sibling, a timeout or `group.Cancel()` doesn't stop it |
+| `SC0002` | `group.Run(_ => DownloadAsync(url, cancellationToken))`: an outer token instead of the work's own, in a child or in the group's body | Only the caller can cancel it, so a failing sibling, a timeout or `group.Cancel()` doesn't stop it. A body that loops on an outer token never ends after a child fails, so the group never completes |
 | `SC0003` | `Task.Run(() => DownloadAsync(url));` in a group's body or child, with the task thrown away | The work isn't a child: the group doesn't cancel it, doesn't wait for it, and never sees it fail |
 | `SC0004` | `await Task.WhenAll(GetUserAsync(id, ct), GetOrdersAsync(id, ct))` | When one call fails, the other keeps running and `WhenAll` waits for it, although both take a token that could cancel it |
 
-`SC0001` and `SC0002` check every lambda that StructuredConcurrency passes a token to: `group.Run`, `StartAsync`, `Produce`, `AllAsync`, `FirstSuccessAsync`, `AllSettledAsync`, `HedgeAsync`, the timeouts, `SelectConcurrentAsync`, `SingleFlight`, `KeyedSequencer` and `Supervisor`. `SC0002` has a code fix that switches the work to its own token.
+`SC0001` and `SC0002` check every lambda that StructuredConcurrency passes a token to: `group.Run`, `StartAsync`, `Produce`, `AllAsync`, `FirstSuccessAsync`, `AllSettledAsync`, `HedgeAsync`, the timeouts, `SelectConcurrentAsync`, `SingleFlight`, `KeyedSequencer` and `Supervisor`. `SC0002` also checks the bodies passed to `TaskGroup.RunAsync` and `Supervisor.RunGroupAsync`, whose own token is `group.CancellationToken`:
+
+```csharp
+await TaskGroup.RunAsync(async group =>
+{
+    // SC0002: when an order fails, the group is cancelled, but this loop waits on the caller's token and goes on
+    // reading orders that the failed group will never start. Use group.CancellationToken.
+    await foreach (var order in queue.ReadAllAsync(cancellationToken))
+    {
+        group.Run(ct => HandleAsync(order, ct));
+    }
+}, cancellationToken);
+```
+
+`SC0002` has a code fix that switches the work to its own token, or the body to `group.CancellationToken`.
+
+The package also keeps the compiler quiet where its warning would be wrong: `group.Run(...)` in an async body doesn't raise CS4014 ("this call is not awaited"), because the group awaits every child it starts. Await the task `Run` returns only when you want the child's result.
 
 `SC0003` checks `Task.Run`, `Task.Factory.StartNew` and `ThreadPool.QueueUserWorkItem` calls whose task is thrown away, in a group's body, in its children and in methods that take a `TaskGroup`. Awaiting or returning the task is fine. Its code fix turns `Task.Run(() => WorkAsync())` into `group.Run(ct => WorkAsync())`; then pass `ct` on. Unlike `Task.Run`, `group.Run` starts the work on the calling thread, which is what you want for work that awaits I/O. For work that computes for a while before its first `await`, keep the thread-pool hop instead: `group.Run(ct => Task.Run(() => WorkAsync(ct), ct))`.
 
 `SC0004` is a suggestion (severity Info), not a warning, because sometimes every operation should run to the end. It reports `Task.WhenAll` over two or more operations that each take a cancellation token, written in the call or kept in locals. Its code fix turns `await Task.WhenAll(SaveAsync(a, ct), SaveAsync(b, ct))` into a `TaskGroup.RunAsync` with one child per call, when every call passes the same token and nobody uses `WhenAll`'s results. Where the results are used, switch to `TaskGroup.AllAsync` by hand.
+
+> **Upgrading from 0.9:** `SC0002` now also reports a group's body that uses an outer token, so a build with `TreatWarningsAsErrors` can stop at code it now reports. The code fix switches it to `group.CancellationToken`.
 
 > **Upgrading from 0.7:** `SC0003` is new, so a build with `TreatWarningsAsErrors` can stop at code it now reports. Fix it, or set its severity in `.editorconfig` as shown below. The package now depends on `System.Threading.RateLimiting`, which ASP.NET Core apps already have.
 
@@ -497,7 +519,8 @@ await TaskGroup.RunAsync(async group =>
         }
     }, capacity: 100);
 
-    await foreach (var order in orders.ReadAllAsync(cancellationToken))
+    // The group's token, so the loop also stops when the producer fails or the group is cancelled.
+    await foreach (var order in orders.ReadAllAsync(group.CancellationToken))
     {
         await HandleAsync(order);
     }
@@ -643,6 +666,18 @@ Version 0.10 includes:
 The API may change before 1.0, but each release is checked against the previous one with package validation, so a breaking change is always deliberate.
 
 Targets .NET 8 and later, and is trimming and NativeAOT compatible.
+
+## Samples
+
+| Sample | Shows |
+| --- | --- |
+| [`samples/WebApi`](samples/WebApi) | A minimal API: fan-out with a deadline, hedged requests, deduplicated loads and first-success downloads, all cancelled when the client disconnects |
+| [`samples/Worker`](samples/Worker) | A queue worker on `StructuredBackgroundService`: per-customer ordering, a concurrency and rate limit, restarts with back-off, and a clean shutdown |
+| [`samples/BeforeAfter`](samples/BeforeAfter/Program.cs) | `Task.WhenAll`, awaiting one by one and a hand-written `CancellationTokenSource`, against `TaskGroup` |
+| [`samples/AnyVsWhenAny`](samples/AnyVsWhenAny/Program.cs) | `Task.WhenAny` and `Task.WhenEach` against `FirstSuccessAsync` |
+| [`samples/TimeoutVsWaitAsync`](samples/TimeoutVsWaitAsync/Program.cs) | `WaitAsync`, `CancelAfter` and `WithTimeoutAsync` |
+
+Each one runs with `dotnet run` and needs no other services: the backends are simulated.
 
 ## Contributing
 

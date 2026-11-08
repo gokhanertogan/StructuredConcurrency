@@ -235,7 +235,7 @@ public class StressTests
             else
             {
                 Assert.Null(thrown);
-                Assert.DoesNotContain(first.Result, failing);
+                Assert.DoesNotContain(await first, failing);
             }
         }
     }

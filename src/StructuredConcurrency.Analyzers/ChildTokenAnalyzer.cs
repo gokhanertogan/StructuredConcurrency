@@ -9,7 +9,9 @@ namespace StructuredConcurrency.Analyzers;
 
 /// <summary>
 /// Finds work passed to StructuredConcurrency that doesn't use the cancellation token it is given, so cancelling the
-/// group (on the first failure, a timeout or shutdown) can't stop it.
+/// group (on the first failure, a timeout or shutdown) can't stop it. A group's body counts as work too: its own token
+/// is <c>group.CancellationToken</c>, and a body that waits on an outer token instead keeps running after a child has
+/// failed, so the group never completes.
 /// </summary>
 [DiagnosticAnalyzer(LanguageNames.CSharp)]
 public sealed class ChildTokenAnalyzer : DiagnosticAnalyzer
@@ -75,6 +77,10 @@ public sealed class ChildTokenAnalyzer : DiagnosticAnalyzer
                     {
                         AnalyzeWork(context, work, parameter, token, group);
                     }
+                    else if (SymbolEqualityComparer.Default.Equals(parameter.Type, group))
+                    {
+                        AnalyzeBody(context, work, parameter, token, group);
+                    }
                 }
             }
         }
@@ -100,9 +106,9 @@ public sealed class ChildTokenAnalyzer : DiagnosticAnalyzer
             doesWork |= operation is IAwaitOperation
                 || (operation is IInvocationOperation call && StartsAsyncWork(call.TargetMethod));
 
-            // A nested lambda that takes a token of its own (say, a nested group.Run) is checked on its own.
+            // A nested lambda that takes a token or a group of its own (say, a nested group.Run) is checked on its own.
             if (SymbolEqualityComparer.Default.Equals(operation.Type, token)
-                && !IsInNestedWork(operation, work, token)
+                && !IsInNestedWork(operation, work, token, group)
                 && IsOuterToken(operation, work, group))
             {
                 outerTokens.Add(operation);
@@ -130,12 +136,47 @@ public sealed class ChildTokenAnalyzer : DiagnosticAnalyzer
         }
     }
 
-    private static bool IsInNestedWork(IOperation operation, IAnonymousFunctionOperation work, INamedTypeSymbol token)
+    // A group's body: not using group.CancellationToken is normal (the body mostly starts children), so only an outer
+    // token is reported. The parameter is still reported first, so the code fix knows which group to use.
+    private static void AnalyzeBody(
+        OperationAnalysisContext context,
+        IAnonymousFunctionOperation body,
+        IParameterSymbol parameter,
+        INamedTypeSymbol token,
+        INamedTypeSymbol group)
+    {
+        var outerTokens = new List<IOperation>();
+        foreach (IOperation operation in body.Body.Descendants())
+        {
+            if (SymbolEqualityComparer.Default.Equals(operation.Type, token)
+                && !IsInNestedWork(operation, body, token, group)
+                && IsOuterToken(operation, body, group))
+            {
+                outerTokens.Add(operation);
+            }
+        }
+
+        if (outerTokens.Count > 0)
+        {
+            Location? parameterLocation = parameter.Locations.FirstOrDefault();
+            IEnumerable<Location> additional = outerTokens.Select(use => use.Syntax.GetLocation());
+            context.ReportDiagnostic(Diagnostic.Create(
+                OtherToken,
+                outerTokens[0].Syntax.GetLocation(),
+                additionalLocations: parameterLocation is null ? null : new[] { parameterLocation }.Concat(additional),
+                messageArgs: string.Join("' and '", outerTokens.Select(use => use.Syntax.ToString()).Distinct())));
+        }
+    }
+
+    // Inside a nested lambda that takes a token or a group of its own (a nested group.Run, a nested group body), which
+    // is checked on its own.
+    private static bool IsInNestedWork(IOperation operation, IAnonymousFunctionOperation work, INamedTypeSymbol token, INamedTypeSymbol group)
     {
         for (IOperation? current = operation.Parent; current is not null && current != work; current = current.Parent)
         {
             if (current is IAnonymousFunctionOperation nested
-                && nested.Symbol.Parameters.Any(p => SymbolEqualityComparer.Default.Equals(p.Type, token)))
+                && nested.Symbol.Parameters.Any(p =>
+                    SymbolEqualityComparer.Default.Equals(p.Type, token) || SymbolEqualityComparer.Default.Equals(p.Type, group)))
             {
                 return true;
             }

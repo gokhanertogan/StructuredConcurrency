@@ -15,7 +15,7 @@ namespace StructuredConcurrency.CodeFixes;
 
 /// <summary>
 /// Fixes SC0002 by replacing the outer tokens with the work's own parameter, which it names <c>ct</c> when it was
-/// <c>_</c>.
+/// <c>_</c>; in a group's body, with <c>group.CancellationToken</c>.
 /// </summary>
 [ExportCodeFixProvider(LanguageNames.CSharp, Name = nameof(UseGivenTokenCodeFix)), Shared]
 public sealed class UseGivenTokenCodeFix : CodeFixProvider
@@ -60,10 +60,11 @@ public sealed class UseGivenTokenCodeFix : CodeFixProvider
             return document;
         }
 
+        bool isGroup = model.GetDeclaredSymbol(parameter, cancellationToken)?.Type is { Name: "TaskGroup", ContainingNamespace.Name: "StructuredConcurrency" };
         string name = parameter.Identifier.ValueText;
         if (name == "_")
         {
-            name = FreeName(work, model);
+            name = FreeName(work, model, isGroup ? "group" : "ct");
         }
 
         var editor = new SyntaxEditor(root, document.Project.Solution.Workspace.Services);
@@ -78,17 +79,21 @@ public sealed class UseGivenTokenCodeFix : CodeFixProvider
             {
                 node = argument.Expression;
             }
-            editor.ReplaceNode(node, SyntaxFactory.IdentifierName(name).WithTriviaFrom(node));
+            ExpressionSyntax replacement = isGroup
+                ? SyntaxFactory.MemberAccessExpression(
+                    SyntaxKind.SimpleMemberAccessExpression, SyntaxFactory.IdentifierName(name), SyntaxFactory.IdentifierName("CancellationToken"))
+                : SyntaxFactory.IdentifierName(name);
+            editor.ReplaceNode(node, replacement.WithTriviaFrom(node));
         }
         return document.WithSyntaxRoot(editor.GetChangedRoot());
     }
 
-    // "ct", or "ct2", "ct3"... if the work or its surroundings already use that name.
-    private static string FreeName(AnonymousFunctionExpressionSyntax work, SemanticModel model)
+    // "ct" (or "group"), or "ct2", "ct3"... if the work or its surroundings already use that name.
+    private static string FreeName(AnonymousFunctionExpressionSyntax work, SemanticModel model, string baseName)
     {
         for (int i = 1; ; i++)
         {
-            string candidate = i == 1 ? "ct" : "ct" + i;
+            string candidate = i == 1 ? baseName : baseName + i;
             bool taken = model.LookupSymbols(work.SpanStart, name: candidate).Any()
                 || work.DescendantTokens().Any(token => token.IsKind(SyntaxKind.IdentifierToken) && token.ValueText == candidate);
             if (!taken)
