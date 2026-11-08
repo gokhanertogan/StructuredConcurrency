@@ -275,7 +275,7 @@ public Task<Product> GetProductAsync(string id, CancellationToken cancellationTo
     _loads.RunAsync(id, ct => _database.LoadProductAsync(id, ct), cancellationToken);
 ```
 
-Results aren't cached: once the operation completes, the next call starts a new one, so put it behind your cache. Each caller's token stops only that caller's wait. The shared operation is cancelled only when *every* caller has given up, and the last one to give up waits for it to stop. `Forget(key)` makes the next call start fresh even while an operation is running.
+Results aren't cached: once the operation completes, the next call starts a new one, so put it behind your cache. Each caller's token stops only that caller's wait. The shared operation is cancelled only when *every* caller has given up, and the last one to give up waits for it to stop. A call that comes while that cancelled operation is still stopping waits for it, then starts a new one, so two operations for the same key never run at once. The exception is `Forget(key)`, which makes the next call start fresh even while an operation is running.
 
 ## Run work for the same key one at a time
 
@@ -325,7 +325,7 @@ var policy = new RestartPolicy
     Window = TimeSpan.FromMinutes(1),
     InitialDelay = TimeSpan.FromSeconds(1),   // then 2 s, 4 s... up to MaxDelay
     ShouldRestart = exception => exception is not AuthenticationException,
-    OnRestart = restart => logger.LogWarning(restart.Failure, "Restart {Restart} in {Delay}", restart.Restart, restart.Delay),
+    OnRestart = restart => logger.LogWarning(restart.Failure, "Restart {RestartNumber} in {Delay}", restart.RestartNumber, restart.Delay),
 };
 
 await TaskGroup.RunAsync(group =>

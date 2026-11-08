@@ -37,5 +37,8 @@ public readonly struct TaskOutcome<T>
         new(exception is OperationCanceledException ? TaskStatus.Canceled : TaskStatus.Faulted, default!, exception);
 
     /// <inheritdoc/>
-    public override string ToString() => IsSuccess ? $"RanToCompletion: {_value}" : $"{Status}: {Exception!.Message}";
+    public override string ToString() => IsSuccess
+        ? $"RanToCompletion: {_value}"
+        // default(TaskOutcome<T>) has no exception.
+        : Exception is null ? Status.ToString() : $"{Status}: {Exception.Message}";
 }

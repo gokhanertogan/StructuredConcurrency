@@ -197,4 +197,15 @@ public class PolicyTests
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => settled);
     }
+
+    [Fact]
+    public void AllSettled_DefaultOutcome_HasAReadableStringAndNoValue()
+    {
+        TaskOutcome<int> outcome = default;
+
+        Assert.False(outcome.IsSuccess);
+        Assert.Null(outcome.Exception);
+        Assert.Equal(nameof(TaskStatus.Created), outcome.ToString());
+        Assert.Throws<InvalidOperationException>(() => outcome.Value);
+    }
 }

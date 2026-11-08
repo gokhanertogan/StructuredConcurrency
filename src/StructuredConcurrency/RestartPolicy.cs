@@ -136,6 +136,6 @@ public sealed class RestartPolicy
 
 /// <summary>Describes a restart that a <see cref="Supervisor"/> is about to make.</summary>
 /// <param name="Failure">The failure that ended the run.</param>
-/// <param name="Restart">How many restarts there have been so far, including this one.</param>
+/// <param name="RestartNumber">How many restarts there have been so far, including this one.</param>
 /// <param name="Delay">How long the supervisor waits before restarting.</param>
-public readonly record struct RestartEvent(Exception Failure, int Restart, TimeSpan Delay);
+public readonly record struct RestartEvent(Exception Failure, int RestartNumber, TimeSpan Delay);

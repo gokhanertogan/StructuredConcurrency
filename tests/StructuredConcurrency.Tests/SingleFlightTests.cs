@@ -114,6 +114,70 @@ public class SingleFlightTests
     }
 
     [Fact]
+    public async Task ACallWhileACancelledOperationIsStillEnding_StartsOnlyAfterItEnds()
+    {
+        var flights = new SingleFlight<string, int>();
+        var ending = new TaskCompletionSource<int>();
+        using var impatient = new CancellationTokenSource();
+
+        // Ignores its token until the gate opens, as slow cleanup would.
+        var cancelled = new TaskCompletionSource();
+        Task<int> abandoned = flights.RunAsync("k", ct =>
+        {
+            ct.Register(() => cancelled.TrySetResult());
+            return ending.Task;
+        }, impatient.Token);
+        impatient.Cancel();
+        await cancelled.Task.WaitAsync(Guard);   // every caller has given up, so the operation is cancelled
+        Assert.False(abandoned.IsCompleted);     // and the last caller to give up waits for it
+
+        bool started = false;
+        Task<int> next = flights.RunAsync("k", _ =>
+        {
+            started = true;
+            return Task.FromResult(9);
+        });
+        await Task.Delay(20);
+        Assert.False(started);
+
+        ending.SetResult(1);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => abandoned.WaitAsync(Guard));
+        Assert.Equal(9, await next.WaitAsync(Guard));
+        Assert.True(started);
+    }
+
+    [Fact]
+    public async Task EveryCallerGivingUpWhileWaitingForACancelledOperation_EndsTheWaitAndLeavesNothingBehind()
+    {
+        var flights = new SingleFlight<string, int>();
+        var ending = new TaskCompletionSource<int>();
+        using var first = new CancellationTokenSource();
+        using var second = new CancellationTokenSource();
+
+        var cancelled = new TaskCompletionSource();
+        Task<int> abandoned = flights.RunAsync("k", ct =>
+        {
+            ct.Register(() => cancelled.TrySetResult());
+            return ending.Task;
+        }, first.Token);
+        first.Cancel();
+        await cancelled.Task.WaitAsync(Guard);
+
+        // Whether the next operation still starts depends on whether this caller's giving up is seen before the
+        // previous one ends; either way the caller sees its own cancellation, and nothing outlives it.
+        Task<int> next = flights.RunAsync("k", ct => Task.Delay(Timeout.Infinite, ct).ContinueWith(_ => 9), second.Token);
+        second.Cancel();
+        Assert.False(next.IsCompleted);   // it waits for the operation before it, which hasn't ended
+
+        ending.SetResult(1);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => abandoned.WaitAsync(Guard));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => next.WaitAsync(Guard));
+
+        // Nothing is left behind for the key.
+        Assert.Equal(3, await flights.RunAsync("k", _ => Task.FromResult(3)).WaitAsync(Guard));
+    }
+
+    [Fact]
     public async Task Forget_MakesTheNextCallStartANewOperation()
     {
         var flights = new SingleFlight<string, int>();

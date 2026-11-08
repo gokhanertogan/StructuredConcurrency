@@ -73,6 +73,8 @@ public sealed class TracingTests : IDisposable
         ActivityEvent exception = Assert.Single(activity.Events);
         Assert.Equal("exception", exception.Name);
         Assert.Equal(typeof(Boom).FullName, exception.Tags.Single(tag => tag.Key == "exception.type").Value);
+        Assert.Equal("boom", exception.Tags.Single(tag => tag.Key == "exception.message").Value);
+        Assert.Contains(nameof(Boom), (string)exception.Tags.Single(tag => tag.Key == "exception.stacktrace").Value!);
     }
 
     [Fact]

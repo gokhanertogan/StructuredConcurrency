@@ -9,8 +9,8 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: |
             8.0.x
@@ -18,7 +18,29 @@ jobs:
       - run: dotnet test -c Release
       - run: dotnet pack src/StructuredConcurrency -c Release -o artifacts
       - run: dotnet pack src/StructuredConcurrency.Hosting -c Release -o artifacts
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: packages
           path: artifacts/*
+
+  # Runs the .NET 10 test build on the newest .NET runtime, including a release candidate, to catch behavior
+  # changes before users hit them. Allowed to fail until that runtime ships; then give the tests its TFM instead.
+  next-runtime:
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 11.0.x
+          dotnet-quality: preview
+      - run: dotnet --list-runtimes
+      - run: dotnet test -c Release -f net10.0 tests/StructuredConcurrency.Tests
+        env:
+          DOTNET_ROLL_FORWARD: LatestMajor
+          DOTNET_ROLL_FORWARD_TO_PRERELEASE: 1

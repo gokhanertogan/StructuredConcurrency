@@ -106,6 +106,17 @@ public class TimeoutTests
         // Thrown by the call itself, not by the task it returns.
         Assert.Throws<ArgumentOutOfRangeException>(() => { _ = TaskGroup.WithTimeoutAsync(TimeSpan.FromSeconds(-1), _ => Task.CompletedTask); });
         Assert.Throws<ArgumentOutOfRangeException>(() => { _ = TaskGroup.WithTimeoutAsync(TimeSpan.MaxValue, _ => Task.CompletedTask); });
+
+        // Every overload, with and without a TimeProvider.
+        TimeSpan negative = TimeSpan.FromSeconds(-1);
+        TimeProvider time = TimeProvider.System;
+        Assert.Throws<ArgumentOutOfRangeException>(() => { _ = TaskGroup.WithTimeoutAsync(negative, _ => Task.FromResult(1)); });
+        Assert.Throws<ArgumentOutOfRangeException>(() => { _ = TaskGroup.WithTimeoutAsync(negative, time, _ => Task.CompletedTask); });
+        Assert.Throws<ArgumentOutOfRangeException>(() => { _ = TaskGroup.WithTimeoutAsync(negative, time, _ => Task.FromResult(1)); });
+        Assert.Throws<ArgumentOutOfRangeException>(() => { _ = TaskGroup.WithTimeoutOrDefaultAsync(negative, _ => Task.FromResult(1), 0); });
+        Assert.Throws<ArgumentOutOfRangeException>(() => { _ = TaskGroup.WithTimeoutOrDefaultAsync(negative, time, _ => Task.FromResult(1), 0); });
+        Assert.Throws<ArgumentOutOfRangeException>(() => { _ = TaskGroup.TryWithTimeoutAsync(negative, _ => Task.CompletedTask); });
+        Assert.Throws<ArgumentOutOfRangeException>(() => { _ = TaskGroup.TryWithTimeoutAsync(negative, time, _ => Task.CompletedTask); });
     }
 
     [Fact]

@@ -10,7 +10,9 @@ namespace StructuredConcurrency;
 /// <remarks>
 /// Results are not cached: once an operation has completed, the next call for its key starts a new one. Each caller's
 /// token cancels only that caller's wait. The operation itself is cancelled only when every caller waiting for it has
-/// given up, and the last caller to give up waits for it to end, so it never outlives all of its callers.
+/// given up, and the last caller to give up waits for it to end, so it never outlives all of its callers. A call that
+/// comes while such a cancelled operation is still ending waits for it to end and then starts a new one, so the
+/// operations for a key never overlap, except after <see cref="Forget(TKey)"/>.
 /// </remarks>
 public sealed class SingleFlight<TKey, TValue>
     where TKey : notnull
@@ -46,10 +48,11 @@ public sealed class SingleFlight<TKey, TValue>
         bool start = false;
         lock (_flights)
         {
-            if (!_flights.TryGetValue(key, out flight))
+            if (!_flights.TryGetValue(key, out flight) || flight.Abandoned)
             {
-                flight = new Flight(key);
-                _flights.Add(key, flight);
+                // An abandoned flight's operation was cancelled and may still be running; the new one starts after it.
+                flight = new Flight(key) { Previous = flight };
+                _flights[key] = flight;
                 start = true;
             }
             flight.Waiters++;
@@ -78,10 +81,36 @@ public sealed class SingleFlight<TKey, TValue>
 
     private void Start(Flight flight, Func<CancellationToken, Task<TValue>> operation)
     {
+        Task? previous = flight.Previous?.Result.Task;
+        flight.Previous = null;
+        if (previous is { IsCompleted: false })
+        {
+            previous.ContinueWith(
+                static (_, state) =>
+                {
+                    var (self, flight, operation) = ((SingleFlight<TKey, TValue>, Flight, Func<CancellationToken, Task<TValue>>))state!;
+                    self.StartNow(flight, operation);
+                },
+                (this, flight, operation),
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+        else
+        {
+            StartNow(flight, operation);
+        }
+    }
+
+    private void StartNow(Flight flight, Func<CancellationToken, Task<TValue>> operation)
+    {
         Task<TValue> task;
         try
         {
-            task = operation(flight.Cancellation.Token) ?? throw new InvalidOperationException("The operation returned null.");
+            // Every caller may have given up while it waited for the previous operation; then it never runs.
+            task = flight.Cancellation.IsCancellationRequested
+                ? Task.FromCanceled<TValue>(flight.Cancellation.Token)
+                : operation(flight.Cancellation.Token) ?? throw new InvalidOperationException("The operation returned null.");
         }
         catch (Exception exception)
         {
@@ -141,6 +170,8 @@ public sealed class SingleFlight<TKey, TValue>
     }
 
     // Removes a waiter (or, when the operation lands, the flight itself). Returns true if that cancelled the operation.
+    // A cancelled flight stays in the dictionary, marked abandoned, until its operation lands, so that the next call
+    // waits for it instead of overlapping it.
     private bool Leave(Flight flight, bool waiting)
     {
         bool cancel = false;
@@ -149,8 +180,9 @@ public sealed class SingleFlight<TKey, TValue>
             if (waiting)
             {
                 cancel = --flight.Waiters == 0;
+                flight.Abandoned |= cancel;
             }
-            if ((cancel || !waiting) && _flights.TryGetValue(flight.Key, out Flight? current) && current == flight)
+            if (!waiting && _flights.TryGetValue(flight.Key, out Flight? current) && current == flight)
             {
                 _flights.Remove(flight.Key);
             }
@@ -180,5 +212,11 @@ public sealed class SingleFlight<TKey, TValue>
 
         // Guarded by the lock on the flights dictionary.
         public int Waiters { get; set; }
+
+        // Every caller gave up and the operation was cancelled. Guarded by the lock on the flights dictionary.
+        public bool Abandoned { get; set; }
+
+        // The abandoned flight this one must not overlap; read once, by Start.
+        public Flight? Previous { get; set; }
     }
 }

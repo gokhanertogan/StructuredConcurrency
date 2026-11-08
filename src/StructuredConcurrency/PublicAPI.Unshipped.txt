@@ -3,3 +3,11 @@ static StructuredConcurrency.TaskGroup.FirstSuccessAsync<T>(System.Collections.G
 static StructuredConcurrency.TaskGroup.FirstSuccessAsync<T>(System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<T>!>! first, System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<T>!>! second, System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<T>!>! third, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<T>!
 static StructuredConcurrency.TaskGroup.FirstSuccessAsync<T>(System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<T>!>! first, System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<T>!>! second, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<T>!
 static StructuredConcurrency.TaskGroup.FirstSuccessAsync<TSource, TResult>(System.Collections.Generic.IEnumerable<TSource>! source, System.Func<TSource, System.Threading.CancellationToken, System.Threading.Tasks.Task<TResult>!>! operation, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<TResult>!
+*REMOVED*StructuredConcurrency.RestartEvent.Deconstruct(out System.Exception! Failure, out int Restart, out System.TimeSpan Delay) -> void
+*REMOVED*StructuredConcurrency.RestartEvent.Restart.get -> int
+*REMOVED*StructuredConcurrency.RestartEvent.Restart.init -> void
+*REMOVED*StructuredConcurrency.RestartEvent.RestartEvent(System.Exception! Failure, int Restart, System.TimeSpan Delay) -> void
+StructuredConcurrency.RestartEvent.Deconstruct(out System.Exception! Failure, out int RestartNumber, out System.TimeSpan Delay) -> void
+StructuredConcurrency.RestartEvent.RestartNumber.get -> int
+StructuredConcurrency.RestartEvent.RestartNumber.init -> void
+StructuredConcurrency.RestartEvent.RestartEvent(System.Exception! Failure, int RestartNumber, System.TimeSpan Delay) -> void

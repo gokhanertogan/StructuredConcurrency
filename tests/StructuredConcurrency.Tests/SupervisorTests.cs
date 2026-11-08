@@ -42,7 +42,7 @@ public class SupervisorTests
         int result = await Supervisor.RunAsync(work.RunAsync, NoDelay(onRestart: restarts.Add)).WaitAsync(Guard);
 
         Assert.Equal(3, result);
-        Assert.Equal(new[] { 1, 2 }, restarts.Select(r => r.Restart));
+        Assert.Equal(new[] { 1, 2 }, restarts.Select(r => r.RestartNumber));
         Assert.Equal(new[] { 1, 2 }, restarts.Select(r => ((Boom)r.Failure).Run));
     }
 
@@ -86,6 +86,31 @@ public class SupervisorTests
 
         await run.WaitAsync(Guard);
         Assert.Equal(5, runs);
+    }
+
+    [Fact]
+    public async Task ARestartExactlyOneWindowOld_IsForgotten()
+    {
+        var time = new FakeTimeProvider();
+        int runs = 0;
+        var policy = new RestartPolicy { MaxRestarts = 1, Window = TimeSpan.FromMinutes(1), InitialDelay = TimeSpan.Zero, TimeProvider = time };
+
+        // The second failure comes exactly one window after the first restart, so that restart no longer counts.
+        Task run = Supervisor.RunAsync(_ =>
+        {
+            if (++runs < 3)
+            {
+                if (runs == 2)
+                {
+                    time.Advance(policy.Window);
+                }
+                throw new Boom(runs);
+            }
+            return Task.CompletedTask;
+        }, policy);
+
+        await run.WaitAsync(Guard);
+        Assert.Equal(3, runs);
     }
 
     [Fact]
