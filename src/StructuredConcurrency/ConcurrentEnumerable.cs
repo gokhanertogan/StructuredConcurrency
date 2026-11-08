@@ -6,7 +6,7 @@ namespace StructuredConcurrency;
 /// Runs an operation for every item with a concurrency limit and streams the results as they are ready, like Kotlin's
 /// <c>flatMapMerge</c>, Rust's <c>buffered</c> / <c>buffer_unordered</c> and Python's <c>asyncio.as_completed</c>.
 /// </summary>
-public static class ConcurrentEnumerable
+public static partial class ConcurrentEnumerable
 {
     /// <summary>
     /// Runs <paramref name="selector"/> for the items, at most <paramref name="maxConcurrency"/> at a time, and yields

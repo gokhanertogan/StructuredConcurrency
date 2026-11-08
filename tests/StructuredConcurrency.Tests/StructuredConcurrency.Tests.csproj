@@ -7,6 +7,9 @@
 
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
+
+    <!-- Some tests give work that ignores its token, or uses another one, on purpose. -->
+    <NoWarn>$(NoWarn);SC0001;SC0002</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
@@ -24,6 +27,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\StructuredConcurrency\StructuredConcurrency.csproj" />
+    <!-- As the package does, so the tests compile the way users' code does (CS4014 is suppressed on group.Run). -->
+    <ProjectReference Include="..\..\src\StructuredConcurrency.Analyzers\StructuredConcurrency.Analyzers.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\..\src\StructuredConcurrency.Hosting\StructuredConcurrency.Hosting.csproj" />
   </ItemGroup>
 

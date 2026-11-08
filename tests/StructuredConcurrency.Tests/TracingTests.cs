@@ -78,6 +78,27 @@ public sealed class TracingTests : IDisposable
     }
 
     [Fact]
+    public async Task Timeout_IsRecordedAsTheCauseAndAFailure()
+    {
+        var time = new Microsoft.Extensions.Time.Testing.FakeTimeProvider();
+        string name = "group-" + Guid.NewGuid().ToString("N");
+        Task run = TaskGroup.RunAsync(group =>
+        {
+            group.Run(ct => Task.Delay(Timeout.Infinite, ct));
+            return Task.CompletedTask;
+        }, new TaskGroupOptions { Name = name, Timeout = TimeSpan.FromSeconds(1), TimeProvider = time });
+
+        time.Advance(TimeSpan.FromSeconds(1));
+        TimeoutException exception = await Assert.ThrowsAsync<TimeoutException>(() => run);
+
+        Activity activity = Single(name);
+        Assert.Equal("timeout", activity.GetTagItem("taskgroup.cancelled_by"));
+        Assert.Equal("failed", activity.GetTagItem("taskgroup.outcome"));
+        Assert.Equal(ActivityStatusCode.Error, activity.Status);
+        Assert.Contains(name, exception.Message);
+    }
+
+    [Fact]
     public async Task Cancel_And_CallerCancellation_AreRecorded()
     {
         await TaskGroup.RunAsync(group =>
@@ -153,6 +174,27 @@ public sealed class TracingTests : IDisposable
     }
 
     [Fact]
+    public async Task CreatedGroup_IsCurrentUntilJoined_AndItsChildrenNestUnderIt()
+    {
+        using Activity? outer = s_work.StartActivity("outer-" + Guid.NewGuid().ToString("N"));
+        Assert.NotNull(outer);
+        string childName = "child-" + Guid.NewGuid().ToString("N");
+
+        TaskGroup group = TaskGroup.Create(Named(out string name));
+        group.Run(async _ =>
+        {
+            using Activity? child = s_work.StartActivity(childName);
+            await Task.Yield();
+        });
+        await group.JoinAsync();
+
+        Assert.Same(outer, Activity.Current);
+        Activity recorded = Single(name);
+        Assert.Equal(outer!.SpanId, recorded.ParentSpanId);
+        Assert.Equal(recorded.SpanId, Single(childName).ParentSpanId);
+    }
+
+    [Fact]
     public async Task WithoutAName_TheActivityIsCalledTaskGroup()
     {
         var parent = new ActivityContext(ActivityTraceId.CreateRandom(), ActivitySpanId.CreateRandom(), ActivityTraceFlags.Recorded);
@@ -182,12 +224,13 @@ public sealed class TracingTests : IDisposable
             await TaskGroup.AllAsync(_ => Task.FromResult(1), _ => Task.FromResult(2));
             await TaskGroup.FirstSuccessAsync(_ => Task.FromResult(1), _ => Task.FromResult(2));
             await TaskGroup.AllSettledAsync(new[] { 1, 2 }, (i, _) => Task.FromResult(i), maxConcurrency: 1);
+            await TaskGroup.QuorumAsync(new[] { 1, 2 }, (i, _) => Task.FromResult(i), quorum: 1);
         }
 
         ActivityTraceId trace = _stopped.Single(activity => activity.DisplayName == marker).TraceId;
         string[] names = _stopped.Where(activity => activity.TraceId == trace && activity.Source.Name == TaskGroup.ActivitySourceName)
             .Select(activity => activity.DisplayName).OrderBy(n => n).ToArray();
-        Assert.Equal(["TaskGroup.AllAsync", "TaskGroup.AllSettledAsync", "TaskGroup.FirstSuccessAsync"], names);
+        Assert.Equal(["TaskGroup.AllAsync", "TaskGroup.AllSettledAsync", "TaskGroup.FirstSuccessAsync", "TaskGroup.QuorumAsync"], names);
     }
 
     [Fact]

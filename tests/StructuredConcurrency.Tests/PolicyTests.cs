@@ -145,6 +145,78 @@ public class PolicyTests
     }
 
     // ----------------------------------------------------------------------------------------------------------------
+    // QuorumAsync
+
+    [Fact]
+    public async Task Quorum_ReturnsTheFirstSuccesses_AndCancelsTheRest()
+    {
+        var gates = Enumerable.Range(0, 4).Select(_ => new TaskCompletionSource<int>()).ToArray();
+        var tokens = new CancellationToken[4];
+
+        Task<int[]> quorum = TaskGroup.QuorumAsync(Enumerable.Range(0, 4), (i, ct) => Gated(gates[i], t => tokens[i] = t)(ct), quorum: 2);
+
+        gates[2].SetResult(20);
+        gates[0].SetException(new Boom(0));   // a failure doesn't end it while the quorum is still possible
+        Assert.False(quorum.IsCompleted);
+        gates[3].SetResult(30);
+
+        Assert.Equal(new[] { 20, 30 }, (await quorum).Order());
+        Assert.True(tokens[1].IsCancellationRequested);
+        Assert.True(gates[1].Task.IsCanceled);
+    }
+
+    [Fact]
+    public async Task Quorum_StopsAsSoonAsItCantBeReached_WithOnlyTheRealFailures()
+    {
+        var gates = Enumerable.Range(0, 5).Select(_ => new TaskCompletionSource<int>()).ToArray();
+
+        // 3 of 5 needed: the third failure makes it impossible, and the two still running are cancelled.
+        Task<int[]> quorum = TaskGroup.QuorumAsync(gates.Select(gate => Gated(gate)), quorum: 3);
+
+        gates[0].SetResult(1);
+        gates[4].SetException(new Boom(4));
+        gates[1].SetException(new Boom(1));
+        Assert.False(quorum.IsCompleted);
+        gates[3].SetException(new Boom(3));
+
+        AggregateException thrown = await Assert.ThrowsAsync<AggregateException>(() => quorum);
+        Assert.Equal(new[] { 1, 3, 4 }, thrown.InnerExceptions.Select(e => ((Boom)e).Id));
+        Assert.Contains("Only 1 of 5", thrown.Message);
+        Assert.True(gates[2].Task.IsCanceled);
+    }
+
+    [Fact]
+    public async Task Quorum_OfOne_IsFirstSuccess_AndOfAll_NeedsEveryone()
+    {
+        Assert.Equal(new[] { 2 }, await TaskGroup.QuorumAsync(new[] { 1, 2 }, (i, _) => i == 1 ? Task.FromException<int>(new Boom(1)) : Task.FromResult(i), quorum: 1));
+        Assert.Equal(3, (await TaskGroup.QuorumAsync(new[] { 1, 2, 3 }, (i, _) => Task.FromResult(i), quorum: 3)).Length);
+        await Assert.ThrowsAsync<AggregateException>(() =>
+            TaskGroup.QuorumAsync(new[] { 1, 2 }, (i, _) => i == 1 ? Task.FromException<int>(new Boom(1)) : Task.FromResult(i), quorum: 2));
+    }
+
+    [Fact]
+    public async Task Quorum_CallerCancellation_EndsAsCancelled()
+    {
+        using var cts = new CancellationTokenSource();
+        var gates = new[] { new TaskCompletionSource<int>(), new TaskCompletionSource<int>() };
+
+        Task<int[]> quorum = TaskGroup.QuorumAsync(gates.Select(gate => Gated(gate)), quorum: 1, cts.Token);
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => quorum);
+        Assert.True(quorum.IsCanceled);
+    }
+
+    [Fact]
+    public void Quorum_OutOfRange_Throws()
+    {
+        int[] three = [1, 2, 3];
+        Assert.Throws<ArgumentOutOfRangeException>(() => { _ = TaskGroup.QuorumAsync(three, (i, _) => Task.FromResult(i), quorum: 0); });
+        Assert.Throws<ArgumentOutOfRangeException>(() => { _ = TaskGroup.QuorumAsync(three, (i, _) => Task.FromResult(i), quorum: 4); });
+        Assert.Throws<ArgumentOutOfRangeException>(() => { _ = TaskGroup.QuorumAsync(Array.Empty<Func<CancellationToken, Task<int>>>(), quorum: 1); });
+    }
+
+    // ----------------------------------------------------------------------------------------------------------------
     // AllSettledAsync
 
     [Fact]

@@ -6,6 +6,7 @@ namespace StructuredConcurrency;
 public sealed class TaskGroupOptions
 {
     private readonly int? _maxConcurrency;
+    private readonly TimeSpan? _timeout;
 
     /// <summary>Gets the default options: no concurrency limit, and the first failure cancels the remaining children.</summary>
     public static TaskGroupOptions Default { get; } = new();
@@ -68,4 +69,34 @@ public sealed class TaskGroupOptions
     /// fails with <see cref="RateLimitRejectedException"/>. The group doesn't dispose the limiter.
     /// </remarks>
     public RateLimiter? RateLimiter { get; init; }
+
+    /// <summary>
+    /// Gets how long the group may run, or <see langword="null"/> for no limit. When the time is up, the group is
+    /// cancelled, waits for its body and children to stop, and then throws <see cref="TimeoutException"/>.
+    /// </summary>
+    /// <remarks>
+    /// It is the same as wrapping the group in <see cref="TaskGroup.WithTimeoutAsync(TimeSpan, Func{CancellationToken, Task}, CancellationToken)"/>:
+    /// the group throws <see cref="TimeoutException"/> only when the timer is what cancelled it. A failure, a call to
+    /// <see cref="TaskGroup.Cancel"/> or the caller's token that comes first is reported as usual. Up to about 49 days,
+    /// or <see cref="System.Threading.Timeout.InfiniteTimeSpan"/>.
+    /// </remarks>
+    /// <exception cref="ArgumentOutOfRangeException">The value is negative or too long.</exception>
+    public TimeSpan? Timeout
+    {
+        get => _timeout;
+        init
+        {
+            if (value is TimeSpan timeout)
+            {
+                Timeouts.Validate(timeout, nameof(Timeout));
+            }
+            _timeout = value;
+        }
+    }
+
+    /// <summary>
+    /// Gets the time provider that measures <see cref="Timeout"/>, or <see langword="null"/> for
+    /// <see cref="System.TimeProvider.System"/>. Pass a fake one in tests to make time pass on demand.
+    /// </summary>
+    public TimeProvider? TimeProvider { get; init; }
 }

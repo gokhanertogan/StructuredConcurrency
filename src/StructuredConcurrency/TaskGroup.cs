@@ -67,6 +67,11 @@ public sealed partial class TaskGroup
     private readonly Queue<QueuedChild>? _queue;
     private int _running;
 
+    // Only with a timeout: the timer that cancels the group, and whether it did.
+    private readonly ITimer? _deadline;
+    private readonly TimeSpan _timeout;
+    private bool _timedOut;
+
     private TaskGroup(ICompleter completer, TaskGroupOptions options, CancellationToken callerToken)
     {
         _completer = completer;
@@ -97,6 +102,13 @@ public sealed partial class TaskGroup
 
             // However the group gets cancelled, queued work is dropped at once rather than when a slot frees up.
             CancellationToken.Register(static state => ((TaskGroup)state!).DrainQueue(), this);
+        }
+
+        if (options.Timeout is TimeSpan timeout && timeout != Timeout.InfiniteTimeSpan)
+        {
+            _timeout = timeout;
+            _deadline = (options.TimeProvider ?? TimeProvider.System).CreateTimer(
+                static state => ((TaskGroup)state!).CancelCore("timeout"), this, timeout, Timeout.InfiniteTimeSpan);
         }
     }
 
@@ -601,6 +613,11 @@ public sealed partial class TaskGroup
         {
             return;
         }
+        if (reason == "timeout")
+        {
+            // Only when the timer is what cancels the group: a failure, Cancel() or the caller that came first wins.
+            Volatile.Write(ref _timedOut, true);
+        }
         if (_trace is not null)
         {
             // The caller's token cancels the group without coming through here; if it already has, it was first.
@@ -628,6 +645,7 @@ public sealed partial class TaskGroup
     private void Complete()
     {
         Volatile.Write(ref _state, StateCompleted);
+        _deadline?.Dispose();
         _cts.Dispose();
 
         List<Exception>? failures = _failures;
@@ -642,6 +660,14 @@ public sealed partial class TaskGroup
 
         // Read once, so the activity and the metrics record the same outcome the task ends with.
         bool callerCancelled = _callerToken.IsCancellationRequested;
+
+        // The timer cancelled the group and nothing else went wrong: the group failed by running out of time, as with
+        // WithTimeoutAsync. The children's cancellations were the group's doing, so they were not recorded.
+        if (snapshot is null && !callerCancelled && Volatile.Read(ref _timedOut))
+        {
+            snapshot = [new TimeoutException($"The task group{(_trace?.Activity.DisplayName is { } name ? $" '{name}'" : "")} did not complete within {_timeout}.")];
+            _measurements?.Failed();
+        }
         string outcome = snapshot is not null ? "failed" : callerCancelled || _bodyCanceled ? "cancelled" : "success";
 
         // Before the result is published, so the activity has ended by the time the caller continues.
@@ -714,6 +740,9 @@ public sealed partial class TaskGroup
 
     private interface ICompleter
     {
+        // The group's outcome, as the caller sees it.
+        Task Task { get; }
+
         void SetSuccess();
 
         bool TrySetException(IEnumerable<Exception> exceptions);
@@ -729,6 +758,8 @@ public sealed partial class TaskGroup
         }
 
         public Task? Body { get; set; }
+
+        Task ICompleter.Task => Task;
 
         public void SetSuccess() => TrySetResult(Body is Task<TResult> body ? body.Result : default!);
     }

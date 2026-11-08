@@ -170,4 +170,129 @@ public class TimeoutTests
         Assert.False(await tried.WaitAsync(TimeSpan.FromSeconds(10)));
         await Assert.ThrowsAsync<TimeoutException>(() => plain.WaitAsync(TimeSpan.FromSeconds(10)));
     }
+
+    // ----------------------------------------------------------------------------------------------------------------
+    // TaskGroupOptions.Timeout
+
+    private sealed class Boom() : Exception("boom");
+
+    private static TaskGroupOptions Deadline(FakeTimeProvider time) => new() { Timeout = TimeSpan.FromSeconds(1), TimeProvider = time };
+
+    [Fact]
+    public async Task GroupTimeout_CancelsTheChildren_WaitsForThem_ThenThrowsTimeoutException()
+    {
+        var time = new FakeTimeProvider();
+        var stopping = new TaskCompletionSource();
+        bool stopped = false;
+
+        Task run = TaskGroup.RunAsync(group =>
+        {
+            group.Run(async ct =>
+            {
+                try
+                {
+                    await Task.Delay(Timeout.Infinite, ct);
+                }
+                finally
+                {
+                    await stopping.Task;   // slow cleanup
+                    stopped = true;
+                }
+            });
+            return Task.CompletedTask;
+        }, Deadline(time));
+
+        time.Advance(TimeSpan.FromSeconds(1));
+        Assert.False(run.IsCompleted);   // waits for the child to stop
+
+        stopping.SetResult();
+        TimeoutException exception = await Assert.ThrowsAsync<TimeoutException>(() => run.WaitAsync(Long));
+        Assert.True(stopped);
+        Assert.Contains("00:00:01", exception.Message);
+    }
+
+    [Fact]
+    public async Task GroupTimeout_AppliesToTheBodyToo()
+    {
+        var time = new FakeTimeProvider();
+        Task<int> run = TaskGroup.RunAsync(async group =>
+        {
+            await Task.Delay(Timeout.Infinite, group.CancellationToken);
+            return 1;
+        }, Deadline(time));
+
+        time.Advance(TimeSpan.FromSeconds(1));
+        await Assert.ThrowsAsync<TimeoutException>(() => run.WaitAsync(Long));
+    }
+
+    [Fact]
+    public async Task GroupTimeout_AFailureBeforeTheTimeIsUp_IsReportedInstead()
+    {
+        var time = new FakeTimeProvider();
+        var fail = new TaskCompletionSource();
+        Task run = TaskGroup.RunAsync(group =>
+        {
+            group.Run(async _ =>
+            {
+                await fail.Task;
+                throw new Boom();
+            });
+            group.Run(ct => Task.Delay(Timeout.Infinite, ct));
+            return Task.CompletedTask;
+        }, Deadline(time));
+
+        fail.SetResult();
+        time.Advance(TimeSpan.FromSeconds(5));
+        await Assert.ThrowsAsync<Boom>(() => run.WaitAsync(Long));
+    }
+
+    [Fact]
+    public async Task GroupTimeout_CallerCancellationOrCancelFirst_Wins()
+    {
+        var time = new FakeTimeProvider();
+        using var cts = new CancellationTokenSource();
+        Task byCaller = TaskGroup.RunAsync(group =>
+        {
+            group.Run(ct => Task.Delay(Timeout.Infinite, ct));
+            return Task.CompletedTask;
+        }, Deadline(time), cts.Token);
+        cts.Cancel();
+        time.Advance(TimeSpan.FromSeconds(5));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => byCaller.WaitAsync(Long));
+
+        Task cancelled = TaskGroup.RunAsync(group =>
+        {
+            group.Run(ct => Task.Delay(Timeout.Infinite, ct));
+            group.Cancel();
+            return Task.CompletedTask;
+        }, Deadline(time));
+        time.Advance(TimeSpan.FromSeconds(5));
+        await cancelled.WaitAsync(Long);
+    }
+
+    [Fact]
+    public async Task GroupTimeout_InTime_Succeeds_AndTheTimerIsGone()
+    {
+        var time = new FakeTimeProvider();
+        var gate = new TaskCompletionSource();
+        Task run = TaskGroup.RunAsync(group =>
+        {
+            group.Run(_ => gate.Task);
+            return Task.CompletedTask;
+        }, Deadline(time));
+
+        time.Advance(TimeSpan.FromMilliseconds(999));
+        gate.SetResult();
+        await run.WaitAsync(Long);
+        time.Advance(TimeSpan.FromSeconds(5));   // a timer left behind would fire here, on a completed group
+    }
+
+    [Fact]
+    public void GroupTimeout_RejectsTimeoutsItCannotWaitFor()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new TaskGroupOptions { Timeout = TimeSpan.FromSeconds(-1) });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new TaskGroupOptions { Timeout = TimeSpan.MaxValue });
+        _ = new TaskGroupOptions { Timeout = Timeout.InfiniteTimeSpan };
+        _ = new TaskGroupOptions { Timeout = null };
+    }
 }
