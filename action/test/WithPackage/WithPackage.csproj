@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Already uses StructuredConcurrency, so its analyzers run twice: once from the package, once from the check.
+       Each finding must still be reported once. -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="StructuredConcurrency" Version="0.10.0" />
+  </ItemGroup>
+</Project>

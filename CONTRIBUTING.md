@@ -38,6 +38,7 @@ Warnings are errors, so a build that passes locally with warnings will fail.
 | `tests/` | xUnit tests for the library and for the analyzers |
 | `samples/` | Small console apps that compare the library with the code it replaces |
 | `benchmarks/` | BenchmarkDotNet comparisons |
+| `action.yml`, `action/` | The GitHub Action that runs the analyzers on other repositories, and the projects its workflow tests it on |
 | `src/Directory.Build.props` | Settings shared by both packages, including the version |
 
 ## Writing tests

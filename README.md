@@ -585,6 +585,35 @@ structured_concurrency.analyze_without_package = true
 
 The other rules are about code that uses `TaskGroup`, so they need the package.
 
+### GitHub Action: check pull requests
+
+This repository is also a GitHub Action, **Task.WhenAll Cancellation Check**. It builds your repository with the analyzers added from outside and marks what they find on the pull request, in any C# project, without a package reference or any other change to your code:
+
+```yaml
+on: pull_request
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      - uses: gokhanertogan/StructuredConcurrency@v0.11.0
+```
+
+It reports `SC0004` in every C# project, and `SC0001` to `SC0003` too where the project uses `TaskGroup`. Each finding is an annotation on its line in the pull request's "Files changed" tab, and a row in the job summary. A build with `TreatWarningsAsErrors` doesn't fail because of them.
+
+| Input | Default | Description |
+| --- | --- | --- |
+| `project` | | The solution, project or folder to build. Empty builds the one in the working directory, as `dotnet build` does. |
+| `fail-on-findings` | `false` | `true` to fail the step when it finds something. By default it only reports. |
+| `build-arguments` | | More arguments for `dotnet build`, separated by spaces, such as `-c Release`. |
+| `analyzer-version` | the tag's | The StructuredConcurrency version whose analyzers run. By default, the one the action's tag released: `@v0.11.0` runs 0.11.0. |
+
+The `findings` output is the number of places it reported, for example to post a comment or to fail only on a schedule. Use a release tag such as `@v0.11.0`, not `@main`: `main` can carry a version that isn't on nuget.org yet. The repository has to build, so install the SDKs it needs first. It adds the analyzers through MSBuild's `CustomAfterMicrosoftCommonTargets`; if your build sets that property itself, the action replaces it for this build.
+
 > **Upgrading from 0.9:** `SC0002` now also reports a group's body that uses an outer token, so a build with `TreatWarningsAsErrors` can stop at code it now reports. The code fix switches it to `group.CancellationToken`.
 
 > **Upgrading from 0.7:** `SC0003` is new, so a build with `TreatWarningsAsErrors` can stop at code it now reports. Fix it, or set its severity in `.editorconfig` as shown below. The package now depends on `System.Threading.RateLimiting`, which ASP.NET Core apps already have.

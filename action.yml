@@ -1,0 +1,47 @@
+name: Task.WhenAll Cancellation Check
+description: Finds Task.WhenAll calls in C# code that keep running the other operations after one fails, and marks them on the pull request.
+author: Gokhan Ertogan
+
+branding:
+  icon: git-pull-request
+  color: blue
+
+inputs:
+  project:
+    description: The solution, project or folder to build. Empty builds the one in the working directory, as `dotnet build` does.
+    required: false
+    default: ''
+  fail-on-findings:
+    description: '`true` to fail the step when it finds something. By default it only reports.'
+    required: false
+    default: 'false'
+  build-arguments:
+    description: More arguments for `dotnet build`, such as `-c Release` or `-p:SomeProperty=value`.
+    required: false
+    default: ''
+  analyzer-version:
+    description: The version of the StructuredConcurrency package whose analyzers run. Empty uses the version that the action's tag released, so `@v0.11.0` runs the 0.11.0 analyzers.
+    required: false
+    default: ''
+  analyzer-path:
+    description: For testing the action itself, a StructuredConcurrency.Analyzers.dll to run instead of the package's.
+    required: false
+    default: ''
+
+outputs:
+  findings:
+    description: How many places the check reported.
+    value: ${{ steps.check.outputs.findings }}
+
+runs:
+  using: composite
+  steps:
+    - id: check
+      shell: pwsh
+      run: '& "$env:GITHUB_ACTION_PATH/action/check.ps1"'
+      env:
+        INPUT_PROJECT: ${{ inputs.project }}
+        INPUT_FAIL_ON_FINDINGS: ${{ inputs.fail-on-findings }}
+        INPUT_BUILD_ARGUMENTS: ${{ inputs.build-arguments }}
+        INPUT_ANALYZER_VERSION: ${{ inputs.analyzer-version }}
+        INPUT_ANALYZER_PATH: ${{ inputs.analyzer-path }}

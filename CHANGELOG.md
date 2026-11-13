@@ -10,6 +10,10 @@ released together. Before 1.0 a minor version may break the API; every break is 
 - **Analyzers:** `SC0004` (`Task.WhenAll` that doesn't cancel the rest on failure) can check a project without the
   package, when a `.globalconfig` sets `structured_concurrency.analyze_without_package = true`. Its code fix isn't
   offered there. Projects that use the package see no change.
+- **GitHub Action:** this repository is now the *Task.WhenAll Cancellation Check* action
+  (`uses: gokhanertogan/StructuredConcurrency@v0.11.0`). It builds any C# repository with the analyzers added from
+  outside and reports `SC0004`, plus `SC0001`-`SC0003` where `TaskGroup` is used, as pull request annotations, a job
+  summary and a `findings` output.
 
 ### Other
 
