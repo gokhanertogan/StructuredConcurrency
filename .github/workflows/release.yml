@@ -1,7 +1,7 @@
 name: Release
 
 # Pushing a tag such as v0.2.0 tests, packs and publishes that version to nuget.org,
-# then creates a GitHub release with the packages attached.
+# then creates a GitHub release with the packages attached, and publishes them to GitHub Packages.
 on:
   push:
     tags: ['v*']
@@ -11,6 +11,8 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      # For GitHub Packages.
+      packages: write
       # For NuGet trusted publishing: the job proves to nuget.org which repo and workflow it is.
       id-token: write
     steps:
@@ -52,5 +54,11 @@ jobs:
           NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
       - name: Create the GitHub release
         run: gh release create "$GITHUB_REF_NAME" artifacts/* --title "$GITHUB_REF_NAME" --notes-file notes.md
+        env:
+          GH_TOKEN: ${{ github.token }}
+      # Also on GitHub Packages, so the packages show on the repository page; nuget.org stays the source people install
+      # from. Last, so a problem here can't hold up the release. GitHub Packages takes no .snupkg symbols packages.
+      - name: Publish to GitHub Packages
+        run: dotnet nuget push "artifacts/*.nupkg" --api-key "$GH_TOKEN" --source "https://nuget.pkg.github.com/$GITHUB_REPOSITORY_OWNER/index.json" --skip-duplicate --no-symbols
         env:
           GH_TOKEN: ${{ github.token }}

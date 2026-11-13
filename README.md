@@ -11,6 +11,8 @@
 dotnet add package StructuredConcurrency
 ```
 
+Every release is also published to [GitHub Packages](https://github.com/gokhanertogan?tab=packages&repo_name=StructuredConcurrency), with the packages attached to its [GitHub release](https://github.com/gokhanertogan/StructuredConcurrency/releases). Install from nuget.org unless you need one of those.
+
 ## Promise.all, Promise.any and Promise.allSettled in C#
 
 If you know JavaScript promises, you already know the API. Unlike JavaScript, the tasks that are no longer needed are actually cancelled.

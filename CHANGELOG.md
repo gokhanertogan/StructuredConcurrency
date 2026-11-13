@@ -5,6 +5,10 @@ released together. Before 1.0 a minor version may break the API; every break is 
 
 ## Unreleased
 
+### Other
+
+- Releases are also published to GitHub Packages.
+
 ## 0.10.0
 
 ### Breaking changes
