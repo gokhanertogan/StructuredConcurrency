@@ -70,9 +70,10 @@ The analyzers target netstandard2.0, so newer C# features that need runtime supp
 
 - Keep a pull request to one change, and include tests.
 - Update the README when behavior or the API changes. It is the main documentation.
+- Add a line to the top section of [CHANGELOG.md](CHANGELOG.md) for anything a user of the package would notice. If there is no section for the next version yet, start one with the heading `## Unreleased`.
 - Describe what changed and why in the pull request description. If it fixes an issue, link the issue.
 
-Releases are made by the maintainer, by pushing a version tag. You don't need to bump the version.
+Releases are made by the maintainer: rename `## Unreleased` in the changelog to the version, then push a version tag. The release workflow takes the GitHub release notes from that section and stops before publishing if it is missing. You don't need to bump the version.
 
 ## License
 

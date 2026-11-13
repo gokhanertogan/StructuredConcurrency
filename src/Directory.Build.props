@@ -19,6 +19,7 @@
     <PackageProjectUrl>https://github.com/gokhanertogan/StructuredConcurrency</PackageProjectUrl>
     <RepositoryUrl>https://github.com/gokhanertogan/StructuredConcurrency</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
+    <PackageReleaseNotes>https://github.com/gokhanertogan/StructuredConcurrency/blob/main/CHANGELOG.md</PackageReleaseNotes>
 
     <!-- Source Link: lets consumers step into this code from the debugger. -->
     <PublishRepositoryUrl>true</PublishRepositoryUrl>

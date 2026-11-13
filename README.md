@@ -741,7 +741,7 @@ Version 0.10 includes:
 - in the `StructuredConcurrency.Hosting` package: `StructuredBackgroundService`, with an optional `RestartPolicy`
 - the `SC0001`, `SC0002`, `SC0003` and `SC0004` analyzers, with code fixes for `SC0002`, `SC0003` and `SC0004`
 
-The API may change before 1.0, but each release is checked against the previous one with package validation, so a breaking change is always deliberate.
+The API may change before 1.0, but each release is checked against the previous one with package validation, so a breaking change is always deliberate. [CHANGELOG.md](CHANGELOG.md) lists what changed in each version, breaking changes first.
 
 Targets .NET 8 and later, and is trimming and NativeAOT compatible.
 

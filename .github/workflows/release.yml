@@ -28,6 +28,16 @@ jobs:
             echo "Tag $GITHUB_REF_NAME does not match the package version $version"
             exit 1
           fi
+      # The release notes are this version's section of CHANGELOG.md, from its "## x.y.z" heading to the next one.
+      # Checked before anything is published, so a missing section stops the release instead of leaving it half done.
+      - name: Read the release notes from CHANGELOG.md
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v heading="## $version" '$0 == heading { found = 1; next } found && /^## / { exit } found' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "CHANGELOG.md has no '## $version' section"
+            exit 1
+          fi
       - run: dotnet pack src/StructuredConcurrency -c Release -o artifacts
       - run: dotnet pack src/StructuredConcurrency.Hosting -c Release -o artifacts
       # Trusted publishing: trades the job's OIDC token for an API key that expires within the hour, so there is no
@@ -40,6 +50,7 @@ jobs:
       - run: dotnet nuget push "artifacts/*.nupkg" --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
         env:
           NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
-      - run: gh release create "$GITHUB_REF_NAME" artifacts/* --generate-notes
+      - name: Create the GitHub release
+        run: gh release create "$GITHUB_REF_NAME" artifacts/* --title "$GITHUB_REF_NAME" --notes-file notes.md
         env:
           GH_TOKEN: ${{ github.token }}
