@@ -104,6 +104,31 @@ await TaskGroup.RunAsync(async group =>
 
 Each child receives the group's `CancellationToken`. Children can start more children, and groups can be nested.
 
+### Why was a child cancelled?
+
+A cancelled child only sees an `OperationCanceledException`. `group.CancellationReason` says why, like Go's `context.Cause`: `Failure` (a sibling or the body failed), `Timeout`, `Requested` (`group.Cancel()`), `CallerToken` or `Disposed`, and `None` while the group hasn't been cancelled. It is set before the token is cancelled, so the child can read it in its `catch`:
+
+```csharp
+await TaskGroup.RunAsync(async group =>
+{
+    group.Run(async ct =>
+    {
+        try
+        {
+            await SyncInventoryAsync(ct);
+        }
+        catch (OperationCanceledException) when (group.CancellationReason == TaskGroupCancellationReason.Failure)
+        {
+            logger.LogInformation("Inventory sync stopped because another step failed");
+            throw;
+        }
+    });
+    group.Run(ct => SyncPricesAsync(ct));
+}, cancellationToken);
+```
+
+When several things happen at once, the first one to cancel the group is the reason. The failure itself still comes out of `RunAsync`; the reason is for the children, which otherwise can't tell a sibling's failure from a timeout or a shutdown.
+
 ### Without a lambda: await using
 
 Where a lambda doesn't fit, create the group yourself and join it, like Java's `StructuredTaskScope`:
@@ -151,6 +176,17 @@ await TaskGroup.RunAsync(async group =>
 // Or get the results back, in input order:
 byte[][] files = await TaskGroup.AllAsync(urls, (url, ct) => DownloadAsync(url, ct), maxConcurrency: 8, cancellationToken);
 ```
+
+To shed load instead of queueing it, use `group.TryRun`, like Go's `errgroup.TryGo`. It starts the child only if a slot is free, and the rate limiter, if there is one, grants a permit without waiting. Otherwise it returns `false` and doesn't invoke the work:
+
+```csharp
+if (!workers.TryRun(ct => ProcessAsync(message, ct), out _))
+{
+    await message.AbandonAsync();   // busy: let another instance take it
+}
+```
+
+`TryRun` follows .NET's `Try` pattern: the child's task comes back through an `out` parameter. On a group that is already cancelled, it returns `true` with a cancelled task, as `Run` would.
 
 ### Limit how many tasks start per second
 
@@ -239,6 +275,15 @@ await foreach (Order[] batch in queue.ReadAllAsync(cancellationToken)
 
 Without `onFailure`, the first failure ends the whole pipeline, which is right when a failure means something is broken. With it, a failed item goes to the callback and is skipped; throw from the callback to stop after all. It isn't called for the cancellations that ending the loop causes. `BufferAsync` reads its source ahead of the consumer into a bounded buffer, so the stage before it keeps working while the stage after it is busy; a failure of the source comes out after the items before it.
 
+To give each item its own time limit, like Elixir's `Task.async_stream` with `timeout`, wrap the selector in `WithTimeoutAsync`. A slow item is cancelled and fails with `TimeoutException`, so with `onFailure` it is skipped and reported, and the rest keep flowing:
+
+```csharp
+.SelectConcurrentAsync(
+    (order, ct) => TaskGroup.WithTimeoutAsync(TimeSpan.FromSeconds(5), itemToken => EnrichAsync(order, itemToken), ct),
+    maxConcurrency: 4,
+    onFailure: (order, error) => deadLetters.Add((order, error)))
+```
+
 ## Timeouts that cancel the work
 
 `task.WaitAsync(timeout)` stops *waiting* when the time is up, but the task keeps running with nobody watching it. `TaskGroup.WithTimeoutAsync` cancels the operation's token when the time is up and returns only after the operation has stopped, like Kotlin's `withTimeout`, Python's `asyncio.timeout` and Trio's `fail_after`.
@@ -285,6 +330,30 @@ await TaskGroup.RunAsync(group =>
 ```
 
 It is the same as `TaskGroup.WithTimeoutAsync(timeout, ct => TaskGroup.RunAsync(body, ct))`, and the trace records `taskgroup.cancelled_by = timeout`. Set `TimeProvider` next to it to test it with a `FakeTimeProvider`. Only a cancellation that comes from the timer becomes a `TimeoutException`. Your own token's cancellation, or a timeout inside the operation, comes through unchanged. See [`samples/TimeoutVsWaitAsync`](samples/TimeoutVsWaitAsync/Program.cs) for the three approaches side by side.
+
+### Cleanup that must run after cancellation
+
+Cleanup in a `finally` or a `catch` often has to make a call of its own: release a lock, tell a server the job stopped, roll back. Passing it the token that was just cancelled makes it fail at once. Passing no token at all lets it hang forever. Give it a fresh time limit instead, like Kotlin's `withContext(NonCancellable)` or Trio's shielded cancel scope:
+
+```csharp
+group.Run(async ct =>
+{
+    LockLease lease = await locks.AcquireAsync(key, ct);
+    try
+    {
+        await ProcessAsync(key, ct);
+    }
+    finally
+    {
+        // Not ct: it may already be cancelled. Its own 5 seconds instead.
+        await TaskGroup.WithTimeoutAsync(TimeSpan.FromSeconds(5), cleanupToken => lease.ReleaseAsync(cleanupToken));
+    }
+});
+```
+
+The group still waits for the cleanup before it completes. A cleanup that runs out of time is cancelled, and `TimeoutException` is thrown once it has stopped, so nothing is left running.
+
+### Testing timeouts
 
 Every timeout method also takes a `TimeProvider`, and so does `new ChannelSelect(timeProvider)`. Pass a `FakeTimeProvider` in tests and time passes only when you advance it:
 
@@ -451,7 +520,7 @@ Each group's activity has these tags:
 
 - `taskgroup.children`: how many children were added with `Run`, including queued ones that never started.
 - `taskgroup.outcome`: `success`, `failed` or `cancelled`.
-- `taskgroup.cancelled_by`: `failure`, `caller` or `Cancel`, when it was cancelled.
+- `taskgroup.cancelled_by`: `failure`, `timeout`, `Cancel`, `caller` or `disposed`, when it was cancelled. It matches `group.CancellationReason`.
 
 A failed group has error status and one `exception` event per failure, so a trace shows which child failed and which ones were cancelled because of it. `AllAsync`, `FirstSuccessAsync` and `AllSettledAsync` name their groups after themselves. Set `EnableTracing = false` on a group you don't want traced. With no listener, `ActivitySource` creates nothing.
 
@@ -616,6 +685,8 @@ await TaskGroup.RunAsync(async group =>
 | Java 21+ | `StructuredTaskScope` | `TaskGroup.RunAsync`, `TaskGroup.FirstSuccessAsync` |
 | Go | `errgroup.WithContext` | `TaskGroup.RunAsync`, `TaskGroup.AllAsync` |
 | Go | `errgroup.SetLimit` | `new TaskGroupOptions { MaxConcurrency = n }` |
+| Go | `errgroup.TryGo` | `group.TryRun(work, out var task)` |
+| Go 1.20+ | `context.Cause` | `group.CancellationReason` |
 | Go | `select { case ... }` | `ChannelSelect` |
 | Go | `select { case ch <- v: }` | `ChannelSelect.Send` |
 | Go | Fan-in (merging channels) | `reader.MergeWith(...)` |
@@ -625,6 +696,8 @@ await TaskGroup.RunAsync(async group =>
 | Python 3.11+ | `asyncio.timeout` | `TaskGroup.WithTimeoutAsync` |
 | Trio | `fail_after`, `move_on_after` | `TaskGroup.WithTimeoutAsync`, `TaskGroup.TryWithTimeoutAsync` |
 | Trio | `nursery.start()` | `group.StartAsync` |
+| Kotlin, Trio | `withContext(NonCancellable)`, shielded cancel scope | `TaskGroup.WithTimeoutAsync(timeout, cleanup)` without the outer token |
+| Elixir | `Task.async_stream(timeout:)` | `SelectConcurrentAsync` with `WithTimeoutAsync` in the selector |
 | Kotlin | `flatMapMerge(concurrency)` | `items.SelectConcurrentAsync(..., preserveOrder: false)` |
 | Rust | `buffered(n)`, `buffer_unordered(n)` | `items.SelectConcurrentAsync(..., maxConcurrency: n)` |
 | Python | `asyncio.as_completed` | `items.SelectConcurrentAsync(..., preserveOrder: false)` |
@@ -663,6 +736,14 @@ Yes, and TaskGroup uses one internally. Doing it by hand means cancelling on eve
 ### How do I limit the number of concurrent tasks in C#?
 
 Set `TaskGroupOptions.MaxConcurrency`, or pass `maxConcurrency` to `AllAsync` or `AllSettledAsync`. The usual alternatives each cover part of it. A `SemaphoreSlim` around each task limits concurrency, but a failure doesn't stop the rest. `Parallel.ForEachAsync` has `MaxDegreeOfParallelism` and stops on the first failure, but it returns no results and has no way to collect every outcome.
+
+### How do I run cleanup code after a task is cancelled in C#?
+
+Don't pass the cancelled token to the cleanup, and don't pass `CancellationToken.None` either, or a stuck cleanup hangs forever. Give it its own limit: `await TaskGroup.WithTimeoutAsync(TimeSpan.FromSeconds(5), ct => ReleaseAsync(ct))` in the `finally`. See [Cleanup that must run after cancellation](#cleanup-that-must-run-after-cancellation).
+
+### How do I find out why a task was cancelled?
+
+Inside a group, read `group.CancellationReason` in the `catch (OperationCanceledException)`. It says whether a sibling failed, the group timed out, `Cancel()` was called or the caller's token was cancelled. See [Why was a child cancelled?](#why-was-a-child-cancelled).
 
 ### How do I add a timeout to an async operation in C#?
 
@@ -731,7 +812,7 @@ When children do real asynchronous work, TaskGroup takes about as long as the ha
 
 Version 0.10 includes:
 
-- `TaskGroup.RunAsync`, `TaskGroup.Create` with `JoinAsync`, `Run`, `StartAsync`, `Cancel` and `TaskGroupOptions` (with `CancelOnFailure`, `MaxConcurrency`, `RateLimiter`, `Timeout` and `Name`)
+- `TaskGroup.RunAsync`, `TaskGroup.Create` with `JoinAsync`, `Run`, `TryRun`, `StartAsync`, `Cancel`, `CancellationReason` and `TaskGroupOptions` (with `CancelOnFailure`, `MaxConcurrency`, `RateLimiter`, `Timeout` and `Name`)
 - `AllAsync`, `FirstSuccessAsync`, `AllSettledAsync`, `QuorumAsync`, `HedgeAsync` and `TaskOutcome<T>`
 - `WithTimeoutAsync`, `WithTimeoutOrDefaultAsync` and `TryWithTimeoutAsync`, with or without a `TimeProvider`
 - `Supervisor.RunAsync`, `Supervisor.RunGroupAsync` and `RestartPolicy`

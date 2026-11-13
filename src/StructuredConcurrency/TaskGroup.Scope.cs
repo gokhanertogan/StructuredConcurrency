@@ -92,7 +92,7 @@ public sealed partial class TaskGroup : IAsyncDisposable
         }
 
         LeaveActivity();
-        CancelCore("disposed");
+        CancelCore(TaskGroupCancellationReason.Disposed);
         owner.TrySetResult();
         return new ValueTask(completion.ContinueWith(
             static task => _ = task.Exception,   // observed, so that it is not reported as unobserved

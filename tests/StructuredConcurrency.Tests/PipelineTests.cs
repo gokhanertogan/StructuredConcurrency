@@ -93,6 +93,33 @@ public class PipelineTests
     }
 
     [Fact]
+    public async Task PerItemTimeout_WithTimeoutAsyncInTheSelector_SkipsTheSlowItem()
+    {
+        var timedOut = new List<int>();
+        List<int> results = await new[] { 1, 2, 3 }
+            .SelectConcurrentAsync(
+                (i, ct) => TaskGroup.WithTimeoutAsync(TimeSpan.FromMilliseconds(50), async itemToken =>
+                {
+                    await Task.Delay(i == 2 ? Timeout.Infinite : 1, itemToken);
+                    return i;
+                }, ct),
+                maxConcurrency: 3,
+                onFailure: (i, error) =>
+                {
+                    Assert.IsType<TimeoutException>(error);
+                    lock (timedOut)
+                    {
+                        timedOut.Add(i);
+                    }
+                })
+            .ToListAsync()
+            .WaitAsync(Guard);
+
+        Assert.Equal([1, 3], results);
+        Assert.Equal([2], timedOut);
+    }
+
+    [Fact]
     public void OnFailure_Null_IsRejected()
     {
         Assert.Throws<ArgumentNullException>(() => new[] { 1 }.SelectConcurrentAsync((i, _) => Task.FromResult(i), 1, onFailure: null!));

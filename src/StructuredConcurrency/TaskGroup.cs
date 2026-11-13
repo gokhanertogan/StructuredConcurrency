@@ -72,6 +72,9 @@ public sealed partial class TaskGroup
     private readonly TimeSpan _timeout;
     private bool _timedOut;
 
+    // A TaskGroupCancellationReason, set once by CancelCore.
+    private int _cancellationReason;
+
     private TaskGroup(ICompleter completer, TaskGroupOptions options, CancellationToken callerToken)
     {
         _completer = completer;
@@ -108,7 +111,7 @@ public sealed partial class TaskGroup
         {
             _timeout = timeout;
             _deadline = (options.TimeProvider ?? TimeProvider.System).CreateTimer(
-                static state => ((TaskGroup)state!).CancelCore("timeout"), this, timeout, Timeout.InfiniteTimeSpan);
+                static state => ((TaskGroup)state!).CancelCore(TaskGroupCancellationReason.Timeout), this, timeout, Timeout.InfiniteTimeSpan);
         }
     }
 
@@ -117,6 +120,39 @@ public sealed partial class TaskGroup
     /// cancelled, or when <see cref="Cancel"/> is called.
     /// </summary>
     public CancellationToken CancellationToken { get; }
+
+    /// <summary>
+    /// Gets why the group cancelled its children, or <see cref="TaskGroupCancellationReason.None"/> while it hasn't,
+    /// like Go's <c>context.Cause</c>.
+    /// </summary>
+    /// <remarks>
+    /// It is set before <see cref="CancellationToken"/> is cancelled, so a child that catches the cancellation can
+    /// read it, for example to log that it stopped because a sibling failed rather than because it was slow.
+    /// </remarks>
+    public TaskGroupCancellationReason CancellationReason
+    {
+        get
+        {
+            var reason = (TaskGroupCancellationReason)Volatile.Read(ref _cancellationReason);
+            if (reason != TaskGroupCancellationReason.None)
+            {
+                return reason;
+            }
+
+            // The caller's token cancels the group through the linked source, without coming through CancelCore.
+            return CancellationToken.IsCancellationRequested ? TaskGroupCancellationReason.CallerToken : TaskGroupCancellationReason.None;
+        }
+    }
+
+    private static string TraceName(TaskGroupCancellationReason reason) => reason switch
+    {
+        TaskGroupCancellationReason.Failure => "failure",
+        TaskGroupCancellationReason.Timeout => "timeout",
+        TaskGroupCancellationReason.Requested => "Cancel",
+        TaskGroupCancellationReason.CallerToken => "caller",
+        TaskGroupCancellationReason.Disposed => "disposed",
+        _ => reason.ToString(),
+    };
 
     /// <summary>Runs <paramref name="body"/> in a new group and completes after the body and all children complete.</summary>
     /// <param name="body">Starts the group's children.</param>
@@ -291,7 +327,7 @@ public sealed partial class TaskGroup
     /// Cancels the remaining children without counting as a failure. Cancellations that result from it are not
     /// reported.
     /// </summary>
-    public void Cancel() => CancelCore("Cancel");
+    public void Cancel() => CancelCore(TaskGroupCancellationReason.Requested);
 
     // The group's activity is current from its start until the body returns; the caller then gets its own back.
     private void LeaveActivity()
@@ -585,7 +621,7 @@ public sealed partial class TaskGroup
         // The body failing always ends the group; a child failing does unless the group supervises its children.
         if (_cancelOnFailure || isBody)
         {
-            CancelCore("failure");
+            CancelCore(TaskGroupCancellationReason.Failure);
         }
     }
 
@@ -607,21 +643,29 @@ public sealed partial class TaskGroup
         _measurements?.Failed();
     }
 
-    private void CancelCore(string reason)
+    private void CancelCore(TaskGroupCancellationReason reason)
     {
         if (Interlocked.CompareExchange(ref _state, StateCancelling, StateOpen) != StateOpen)
         {
             return;
         }
-        if (reason == "timeout")
+        if (reason == TaskGroupCancellationReason.Timeout)
         {
             // Only when the timer is what cancels the group: a failure, Cancel() or the caller that came first wins.
             Volatile.Write(ref _timedOut, true);
         }
+
+        // The caller's token cancels the group without coming through here; if it already has, it was first.
+        if (CancellationToken.IsCancellationRequested)
+        {
+            reason = TaskGroupCancellationReason.CallerToken;
+        }
+
+        // Before the token is cancelled, so a child that sees the cancellation also sees why.
+        Volatile.Write(ref _cancellationReason, (int)reason);
         if (_trace is not null)
         {
-            // The caller's token cancels the group without coming through here; if it already has, it was first.
-            _trace.CancelledBy = CancellationToken.IsCancellationRequested ? "caller" : reason;
+            _trace.CancelledBy = TraceName(reason);
         }
 
         try

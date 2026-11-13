@@ -59,10 +59,14 @@ User user = await TaskGroup.WithTimeoutAsync(TimeSpan.FromSeconds(2), ct => Load
 
 ## Also included
 
+- **Group deadlines:** `TaskGroupOptions.Timeout` cancels the whole group when it runs too long
+- **`await using` groups:** `TaskGroup.Create` with `JoinAsync`, like Java's `StructuredTaskScope`, for code where a lambda doesn't fit
+- **Quorums:** `TaskGroup.QuorumAsync` returns the first N successes and cancels the rest
+- **Load shedding and cancellation causes:** `group.TryRun`, like Go's `errgroup.TryGo`, and `group.CancellationReason`, like Go's `context.Cause`
 - **Hedged requests:** `TaskGroup.HedgeAsync` starts a second attempt when the first is slow
 - **Supervisors:** `Supervisor.RunAsync` restarts failing work with backoff, like Erlang/OTP
 - **Rate limiting:** `TaskGroupOptions.RateLimiter` with `System.Threading.RateLimiting`
-- **Bounded parallel streams:** `SelectConcurrentAsync` over collections and `IAsyncEnumerable`, and `ChunkAsync`
+- **Bounded parallel streams and pipelines:** `SelectConcurrentAsync` over collections and `IAsyncEnumerable`, with per-item failure handling, plus `BufferAsync` and `ChunkAsync`
 - **Go's singleflight** (`SingleFlight<TKey, TValue>`) and per-key ordering (`KeyedSequencer<TKey>`)
 - **Go's select** for `System.Threading.Channels`, plus merge and broadcast
 - **OpenTelemetry** tracing and metrics
