@@ -8,8 +8,11 @@ static StructuredConcurrency.AsyncEnumerableChunks.ChunkAsync<T>(this System.Col
 static StructuredConcurrency.Channels.ChannelReaderExtensions.BroadcastAsync<T>(this System.Threading.Channels.ChannelReader<T>! source, System.Collections.Generic.IReadOnlyList<System.Threading.Channels.ChannelWriter<T>!>! targets, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
 static StructuredConcurrency.Channels.ChannelReaderExtensions.MergeWith<T>(this System.Threading.Channels.ChannelReader<T>! first, params System.Threading.Channels.ChannelReader<T>![]! others) -> System.Collections.Generic.IAsyncEnumerable<T>!
 static StructuredConcurrency.Channels.TaskGroupChannelExtensions.Produce<T>(this StructuredConcurrency.TaskGroup! group, System.Func<System.Threading.Channels.ChannelWriter<T>!, System.Threading.CancellationToken, System.Threading.Tasks.Task!>! producer, int capacity = 1) -> System.Threading.Channels.ChannelReader<T>!
+static StructuredConcurrency.ConcurrentEnumerable.BufferAsync<T>(this System.Collections.Generic.IAsyncEnumerable<T>! source, int capacity) -> System.Collections.Generic.IAsyncEnumerable<T>!
 static StructuredConcurrency.ConcurrentEnumerable.SelectConcurrentAsync<TSource, TResult>(this System.Collections.Generic.IAsyncEnumerable<TSource>! source, System.Func<TSource, System.Threading.CancellationToken, System.Threading.Tasks.Task<TResult>!>! selector, int maxConcurrency, bool preserveOrder = true) -> System.Collections.Generic.IAsyncEnumerable<TResult>!
+static StructuredConcurrency.ConcurrentEnumerable.SelectConcurrentAsync<TSource, TResult>(this System.Collections.Generic.IAsyncEnumerable<TSource>! source, System.Func<TSource, System.Threading.CancellationToken, System.Threading.Tasks.Task<TResult>!>! selector, int maxConcurrency, System.Action<TSource, System.Exception!>! onFailure, bool preserveOrder = true) -> System.Collections.Generic.IAsyncEnumerable<TResult>!
 static StructuredConcurrency.ConcurrentEnumerable.SelectConcurrentAsync<TSource, TResult>(this System.Collections.Generic.IEnumerable<TSource>! source, System.Func<TSource, System.Threading.CancellationToken, System.Threading.Tasks.Task<TResult>!>! selector, int maxConcurrency, bool preserveOrder = true) -> System.Collections.Generic.IAsyncEnumerable<TResult>!
+static StructuredConcurrency.ConcurrentEnumerable.SelectConcurrentAsync<TSource, TResult>(this System.Collections.Generic.IEnumerable<TSource>! source, System.Func<TSource, System.Threading.CancellationToken, System.Threading.Tasks.Task<TResult>!>! selector, int maxConcurrency, System.Action<TSource, System.Exception!>! onFailure, bool preserveOrder = true) -> System.Collections.Generic.IAsyncEnumerable<TResult>!
 static StructuredConcurrency.RestartEvent.operator !=(StructuredConcurrency.RestartEvent left, StructuredConcurrency.RestartEvent right) -> bool
 static StructuredConcurrency.RestartEvent.operator ==(StructuredConcurrency.RestartEvent left, StructuredConcurrency.RestartEvent right) -> bool
 static StructuredConcurrency.RestartPolicy.Default.get -> StructuredConcurrency.RestartPolicy!
@@ -26,10 +29,18 @@ static StructuredConcurrency.TaskGroup.AllSettledAsync<T1, T2>(System.Func<Syste
 static StructuredConcurrency.TaskGroup.AllSettledAsync<T>(System.Collections.Generic.IEnumerable<System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<T>!>!>! operations, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<StructuredConcurrency.TaskOutcome<T>[]!>!
 static StructuredConcurrency.TaskGroup.AllSettledAsync<TSource, TResult>(System.Collections.Generic.IEnumerable<TSource>! source, System.Func<TSource, System.Threading.CancellationToken, System.Threading.Tasks.Task<TResult>!>! operation, int maxConcurrency, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<StructuredConcurrency.TaskOutcome<TResult>[]!>!
 static StructuredConcurrency.TaskGroup.AllSettledAsync<TSource, TResult>(System.Collections.Generic.IEnumerable<TSource>! source, System.Func<TSource, System.Threading.CancellationToken, System.Threading.Tasks.Task<TResult>!>! operation, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<StructuredConcurrency.TaskOutcome<TResult>[]!>!
+static StructuredConcurrency.TaskGroup.Create(StructuredConcurrency.TaskGroupOptions! options, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> StructuredConcurrency.TaskGroup!
+static StructuredConcurrency.TaskGroup.Create(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> StructuredConcurrency.TaskGroup!
+static StructuredConcurrency.TaskGroup.FirstSuccessAsync<T>(System.Collections.Generic.IEnumerable<System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<T>!>!>! operations, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<T>!
+static StructuredConcurrency.TaskGroup.FirstSuccessAsync<T>(System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<T>!>! first, System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<T>!>! second, System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<T>!>! third, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<T>!
+static StructuredConcurrency.TaskGroup.FirstSuccessAsync<T>(System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<T>!>! first, System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<T>!>! second, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<T>!
+static StructuredConcurrency.TaskGroup.FirstSuccessAsync<TSource, TResult>(System.Collections.Generic.IEnumerable<TSource>! source, System.Func<TSource, System.Threading.CancellationToken, System.Threading.Tasks.Task<TResult>!>! operation, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<TResult>!
 static StructuredConcurrency.TaskGroup.HedgeAsync<T>(System.TimeSpan delay, System.Func<int, System.Threading.CancellationToken, System.Threading.Tasks.Task<T>!>! operation, int maxAttempts, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<T>!
 static StructuredConcurrency.TaskGroup.HedgeAsync<T>(System.TimeSpan delay, System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<T>!>! operation, int maxAttempts, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<T>!
 static StructuredConcurrency.TaskGroup.HedgeAsync<T>(System.TimeSpan delay, System.TimeProvider! timeProvider, System.Func<int, System.Threading.CancellationToken, System.Threading.Tasks.Task<T>!>! operation, int maxAttempts, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<T>!
 static StructuredConcurrency.TaskGroup.HedgeAsync<T>(System.TimeSpan delay, System.TimeProvider! timeProvider, System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<T>!>! operation, int maxAttempts, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<T>!
+static StructuredConcurrency.TaskGroup.QuorumAsync<T>(System.Collections.Generic.IEnumerable<System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<T>!>!>! operations, int quorum, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<T[]!>!
+static StructuredConcurrency.TaskGroup.QuorumAsync<TSource, TResult>(System.Collections.Generic.IEnumerable<TSource>! source, System.Func<TSource, System.Threading.CancellationToken, System.Threading.Tasks.Task<TResult>!>! operation, int quorum, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<TResult[]!>!
 static StructuredConcurrency.TaskGroup.RunAsync(System.Func<StructuredConcurrency.TaskGroup!, System.Threading.Tasks.Task!>! body, StructuredConcurrency.TaskGroupOptions! options, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
 static StructuredConcurrency.TaskGroup.RunAsync(System.Func<StructuredConcurrency.TaskGroup!, System.Threading.Tasks.Task!>! body, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
 static StructuredConcurrency.TaskGroup.RunAsync<TResult>(System.Func<StructuredConcurrency.TaskGroup!, System.Threading.Tasks.Task<TResult>!>! body, StructuredConcurrency.TaskGroupOptions! options, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<TResult>!
@@ -67,16 +78,16 @@ StructuredConcurrency.RateLimitRejectedException
 StructuredConcurrency.RateLimitRejectedException.RateLimitRejectedException(System.TimeSpan? retryAfter = null) -> void
 StructuredConcurrency.RateLimitRejectedException.RetryAfter.get -> System.TimeSpan?
 StructuredConcurrency.RestartEvent
-StructuredConcurrency.RestartEvent.Deconstruct(out System.Exception! Failure, out int Restart, out System.TimeSpan Delay) -> void
+StructuredConcurrency.RestartEvent.Deconstruct(out System.Exception! Failure, out int RestartNumber, out System.TimeSpan Delay) -> void
 StructuredConcurrency.RestartEvent.Delay.get -> System.TimeSpan
 StructuredConcurrency.RestartEvent.Delay.init -> void
 StructuredConcurrency.RestartEvent.Equals(StructuredConcurrency.RestartEvent other) -> bool
 StructuredConcurrency.RestartEvent.Failure.get -> System.Exception!
 StructuredConcurrency.RestartEvent.Failure.init -> void
-StructuredConcurrency.RestartEvent.Restart.get -> int
-StructuredConcurrency.RestartEvent.Restart.init -> void
 StructuredConcurrency.RestartEvent.RestartEvent() -> void
-StructuredConcurrency.RestartEvent.RestartEvent(System.Exception! Failure, int Restart, System.TimeSpan Delay) -> void
+StructuredConcurrency.RestartEvent.RestartEvent(System.Exception! Failure, int RestartNumber, System.TimeSpan Delay) -> void
+StructuredConcurrency.RestartEvent.RestartNumber.get -> int
+StructuredConcurrency.RestartEvent.RestartNumber.init -> void
 StructuredConcurrency.RestartPolicy
 StructuredConcurrency.RestartPolicy.BackoffMultiplier.get -> double
 StructuredConcurrency.RestartPolicy.BackoffMultiplier.init -> void
@@ -102,11 +113,23 @@ StructuredConcurrency.SingleFlight<TKey, TValue>.SingleFlight(System.Collections
 StructuredConcurrency.Supervisor
 StructuredConcurrency.TaskGroup
 StructuredConcurrency.TaskGroup.Cancel() -> void
+StructuredConcurrency.TaskGroup.CancellationReason.get -> StructuredConcurrency.TaskGroupCancellationReason
 StructuredConcurrency.TaskGroup.CancellationToken.get -> System.Threading.CancellationToken
+StructuredConcurrency.TaskGroup.DisposeAsync() -> System.Threading.Tasks.ValueTask
+StructuredConcurrency.TaskGroup.JoinAsync() -> System.Threading.Tasks.Task!
 StructuredConcurrency.TaskGroup.Run(System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task!>! work) -> System.Threading.Tasks.Task!
 StructuredConcurrency.TaskGroup.Run<T>(System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<T>!>! work) -> System.Threading.Tasks.Task<T>!
 StructuredConcurrency.TaskGroup.StartAsync(System.Func<System.Action!, System.Threading.CancellationToken, System.Threading.Tasks.Task!>! work) -> System.Threading.Tasks.Task!
 StructuredConcurrency.TaskGroup.StartAsync<T>(System.Func<System.Action<T>!, System.Threading.CancellationToken, System.Threading.Tasks.Task!>! work) -> System.Threading.Tasks.Task<T>!
+StructuredConcurrency.TaskGroup.TryRun(System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task!>! work, out System.Threading.Tasks.Task? task) -> bool
+StructuredConcurrency.TaskGroup.TryRun<T>(System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<T>!>! work, out System.Threading.Tasks.Task<T>? task) -> bool
+StructuredConcurrency.TaskGroupCancellationReason
+StructuredConcurrency.TaskGroupCancellationReason.CallerToken = 4 -> StructuredConcurrency.TaskGroupCancellationReason
+StructuredConcurrency.TaskGroupCancellationReason.Disposed = 5 -> StructuredConcurrency.TaskGroupCancellationReason
+StructuredConcurrency.TaskGroupCancellationReason.Failure = 1 -> StructuredConcurrency.TaskGroupCancellationReason
+StructuredConcurrency.TaskGroupCancellationReason.None = 0 -> StructuredConcurrency.TaskGroupCancellationReason
+StructuredConcurrency.TaskGroupCancellationReason.Requested = 3 -> StructuredConcurrency.TaskGroupCancellationReason
+StructuredConcurrency.TaskGroupCancellationReason.Timeout = 2 -> StructuredConcurrency.TaskGroupCancellationReason
 StructuredConcurrency.TaskGroupOptions
 StructuredConcurrency.TaskGroupOptions.CancelOnFailure.get -> bool
 StructuredConcurrency.TaskGroupOptions.CancelOnFailure.init -> void
@@ -119,6 +142,10 @@ StructuredConcurrency.TaskGroupOptions.Name.init -> void
 StructuredConcurrency.TaskGroupOptions.RateLimiter.get -> System.Threading.RateLimiting.RateLimiter?
 StructuredConcurrency.TaskGroupOptions.RateLimiter.init -> void
 StructuredConcurrency.TaskGroupOptions.TaskGroupOptions() -> void
+StructuredConcurrency.TaskGroupOptions.Timeout.get -> System.TimeSpan?
+StructuredConcurrency.TaskGroupOptions.Timeout.init -> void
+StructuredConcurrency.TaskGroupOptions.TimeProvider.get -> System.TimeProvider?
+StructuredConcurrency.TaskGroupOptions.TimeProvider.init -> void
 StructuredConcurrency.TaskOutcome<T>
 StructuredConcurrency.TaskOutcome<T>.Exception.get -> System.Exception?
 StructuredConcurrency.TaskOutcome<T>.IsSuccess.get -> bool

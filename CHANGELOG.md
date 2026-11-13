@@ -3,6 +3,8 @@
 All notable changes to the StructuredConcurrency and StructuredConcurrency.Hosting packages. They are versioned and
 released together. Before 1.0 a minor version may break the API; every break is listed under **Breaking changes**.
 
+## Unreleased
+
 ## 0.10.0
 
 ### Breaking changes
