@@ -115,6 +115,58 @@ public class WhenAllAnalyzerTests
                 await {|SC0004:Task.WhenAll(Save(1, cancellationToken), Save(2, cts.Token))|};
         """);
 
+    // Compiled without a reference to the package, as the GitHub Action does to an arbitrary repository.
+    private static Task VerifyWithoutPackageAsync(string code, string? globalConfig)
+    {
+        var test = new CSharpCodeFixTest<WhenAllAnalyzer, UseTaskGroupCodeFix, DefaultVerifier>
+        {
+            TestCode = code,
+            FixedCode = code,   // there is no TaskGroup to rewrite to, so nothing is fixed
+            ReferenceAssemblies = ReferenceAssemblies.Net.Net80,
+        };
+        if (globalConfig is not null)
+        {
+            test.TestState.AnalyzerConfigFiles.Add(("/.globalconfig", globalConfig));
+            test.FixedState.AnalyzerConfigFiles.Add(("/.globalconfig", globalConfig));
+        }
+        test.FixedState.MarkupHandling = MarkupMode.Allow;
+        return test.RunAsync();
+    }
+
+    private const string WithoutPackageCode = UsingsWithoutPackage + """
+        class C
+        {
+            static Task Save(int id, CancellationToken ct) => Task.CompletedTask;
+
+            async Task M(CancellationToken cancellationToken)
+            {
+                await {|#0:Task.WhenAll(Save(1, cancellationToken), Save(2, cancellationToken))|};
+            }
+        }
+        """;
+
+    [Fact]
+    public Task WithoutThePackage_NothingIsReported_ByDefault() =>
+        VerifyWithoutPackageAsync(WithoutPackageCode.Replace("{|#0:", "").Replace(")|};", ");"), globalConfig: null);
+
+    [Fact]
+    public Task WithoutThePackage_TheOptionTurnsTheRuleOn_WithoutOfferingAFix() =>
+        VerifyWithoutPackageAsync(
+            WithoutPackageCode.Replace("{|#0:", "{|SC0004:"),
+            """
+            is_global = true
+            structured_concurrency.analyze_without_package = true
+            """);
+
+    [Fact]
+    public Task WithoutThePackage_AnyOtherValue_LeavesTheRuleOff() =>
+        VerifyWithoutPackageAsync(
+            WithoutPackageCode.Replace("{|#0:", "").Replace(")|};", ");"),
+            """
+            is_global = true
+            structured_concurrency.analyze_without_package = false
+            """);
+
     [Fact]
     public Task WhenAll_WithoutCancellableWork_IsNotReported() => VerifyAsync("""
                 await Task.WhenAll(Plain(), Plain());

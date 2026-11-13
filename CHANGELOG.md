@@ -3,7 +3,13 @@
 All notable changes to the StructuredConcurrency and StructuredConcurrency.Hosting packages. They are versioned and
 released together. Before 1.0 a minor version may break the API; every break is listed under **Breaking changes**.
 
-## Unreleased
+## 0.11.0
+
+### New
+
+- **Analyzers:** `SC0004` (`Task.WhenAll` that doesn't cancel the rest on failure) can check a project without the
+  package, when a `.globalconfig` sets `structured_concurrency.analyze_without_package = true`. Its code fix isn't
+  offered there. Projects that use the package see no change.
 
 ### Other
 

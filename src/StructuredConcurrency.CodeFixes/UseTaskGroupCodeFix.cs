@@ -32,7 +32,9 @@ public sealed class UseTaskGroupCodeFix : CodeFixProvider
     {
         SyntaxNode? root = await context.Document.GetSyntaxRootAsync(context.CancellationToken).ConfigureAwait(false);
         SemanticModel? model = await context.Document.GetSemanticModelAsync(context.CancellationToken).ConfigureAwait(false);
-        if (root is null || model is null)
+        // Reported in a project without the package (see WhenAllAnalyzer.AnalyzeWithoutPackageOption): there is no
+        // TaskGroup to rewrite the call to.
+        if (root is null || model is null || model.Compilation.GetTypeByMetadataName("StructuredConcurrency.TaskGroup") is null)
         {
             return;
         }

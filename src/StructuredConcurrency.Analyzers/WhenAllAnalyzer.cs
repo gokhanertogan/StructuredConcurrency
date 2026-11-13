@@ -17,6 +17,14 @@ public sealed class WhenAllAnalyzer : DiagnosticAnalyzer
 {
     public const string WhenAllId = "SC0004";
 
+    /// <summary>
+    /// The analyzer config option that turns the rule on in a project without the StructuredConcurrency package, set
+    /// in a <c>.globalconfig</c> as <c>structured_concurrency.analyze_without_package = true</c>. The problem the rule
+    /// finds is in plain <c>Task.WhenAll</c> code, so it is worth reporting anywhere; without the option it stays
+    /// quiet in projects that can't use the fix.
+    /// </summary>
+    public const string AnalyzeWithoutPackageOption = "structured_concurrency.analyze_without_package";
+
     private const string HelpLink = "https://github.com/gokhanertogan/StructuredConcurrency#analyzers";
 
     // A suggestion, not a warning: waiting for every task is sometimes what the code wants.
@@ -41,13 +49,17 @@ public sealed class WhenAllAnalyzer : DiagnosticAnalyzer
             INamedTypeSymbol? token = start.Compilation.GetTypeByMetadataName("System.Threading.CancellationToken");
             INamedTypeSymbol? task = start.Compilation.GetTypeByMetadataName("System.Threading.Tasks.Task");
             INamedTypeSymbol? group = start.Compilation.GetTypeByMetadataName("StructuredConcurrency.TaskGroup");
-            if (token is null || task is null || group is null)
+            if (token is null || task is null || (group is null && !AnalyzeWithoutPackage(start.Options)))
             {
                 return;
             }
             start.RegisterOperationAction(operation => AnalyzeInvocation(operation, token, task), OperationKind.Invocation);
         });
     }
+
+    private static bool AnalyzeWithoutPackage(AnalyzerOptions options) =>
+        options.AnalyzerConfigOptionsProvider.GlobalOptions.TryGetValue(AnalyzeWithoutPackageOption, out string? value)
+        && string.Equals(value.Trim(), "true", System.StringComparison.OrdinalIgnoreCase);
 
     private static void AnalyzeInvocation(OperationAnalysisContext context, INamedTypeSymbol token, INamedTypeSymbol task)
     {

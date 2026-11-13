@@ -576,6 +576,15 @@ The package also keeps the compiler quiet where its warning would be wrong: `gro
 
 `SC0004` is a suggestion (severity Info), not a warning, because sometimes every operation should run to the end. It reports `Task.WhenAll` over two or more operations that each take a cancellation token, written in the call or kept in locals. Its code fix turns `await Task.WhenAll(SaveAsync(a, ct), SaveAsync(b, ct))` into a `TaskGroup.RunAsync` with one child per call, when every call passes the same token and nobody uses `WhenAll`'s results. Where the results are used, switch to `TaskGroup.AllAsync` by hand.
 
+`SC0004` finds a problem in plain `Task.WhenAll` code, so it can also check a project that doesn't use the package. By default it stays quiet there, where its fix can't apply; a `.globalconfig` turns it on:
+
+```ini
+is_global = true
+structured_concurrency.analyze_without_package = true
+```
+
+The other rules are about code that uses `TaskGroup`, so they need the package.
+
 > **Upgrading from 0.9:** `SC0002` now also reports a group's body that uses an outer token, so a build with `TreatWarningsAsErrors` can stop at code it now reports. The code fix switches it to `group.CancellationToken`.
 
 > **Upgrading from 0.7:** `SC0003` is new, so a build with `TreatWarningsAsErrors` can stop at code it now reports. Fix it, or set its severity in `.editorconfig` as shown below. The package now depends on `System.Threading.RateLimiting`, which ASP.NET Core apps already have.
@@ -812,7 +821,7 @@ When children do real asynchronous work, TaskGroup takes about as long as the ha
 
 ## Status
 
-Version 0.10 includes:
+Version 0.11 includes:
 
 - `TaskGroup.RunAsync`, `TaskGroup.Create` with `JoinAsync`, `Run`, `TryRun`, `StartAsync`, `Cancel`, `CancellationReason` and `TaskGroupOptions` (with `CancelOnFailure`, `MaxConcurrency`, `RateLimiter`, `Timeout` and `Name`)
 - `AllAsync`, `FirstSuccessAsync`, `AllSettledAsync`, `QuorumAsync`, `HedgeAsync` and `TaskOutcome<T>`
