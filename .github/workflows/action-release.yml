@@ -1,0 +1,70 @@
+name: Action release
+
+# Runs the action from a released tag with its defaults, as a user's workflow does: the analyzers come from the
+# package that tag published on nuget.org. The Action workflow tests the action against analyzers built from source;
+# this one tests what users actually get. Runs after each release, or by hand for a given tag.
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The release tag to test, such as v0.11.1
+        required: true
+
+jobs:
+  test:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      # The repository at main, for the test projects.
+      - uses: actions/checkout@v7
+
+      # The action as the tag released it. `uses:` can't take an expression, so the tag is checked out into a folder
+      # and run from there, which runs the same files.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.workflow_run.head_branch }}
+          path: released-action
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      # nuget.org can take a while to serve a package after it is pushed.
+      - name: Wait for the package on nuget.org
+        shell: bash
+        run: |
+          version=$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' released-action/src/Directory.Build.props)
+          for attempt in $(seq 1 60); do
+            if curl -sf "https://api.nuget.org/v3-flatcontainer/structuredconcurrency/$version/structuredconcurrency.$version.nupkg" -o /dev/null; then
+              echo "StructuredConcurrency $version is on nuget.org"
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "StructuredConcurrency $version didn't appear on nuget.org within 30 minutes"
+          exit 1
+
+      - id: without-package
+        uses: ./released-action
+        with:
+          project: action/test/WithoutPackage
+      - name: Expect one finding
+        shell: bash
+        run: test "${{ steps.without-package.outputs.findings }}" = "1"
+
+      - id: clean
+        uses: ./released-action
+        with:
+          project: action/test/Clean
+      - name: Expect no findings
+        shell: bash
+        run: test "${{ steps.clean.outputs.findings }}" = "0"
