@@ -181,7 +181,9 @@ public class PolicyTests
 
         AggregateException thrown = await Assert.ThrowsAsync<AggregateException>(() => quorum);
         Assert.Equal(new[] { 1, 3, 4 }, thrown.InnerExceptions.Select(e => ((Boom)e).Id));
-        Assert.Contains("Only 1 of 5", thrown.Message);
+        // The success is counted only if its continuation ran before the third failure's, and xUnit's synchronization
+        // context runs them in any order. Either way, three failures of five make a quorum of three impossible.
+        Assert.Matches(@"^Only [01] of 5 operations succeeded; 3 were needed\.", thrown.Message);
         Assert.True(gates[2].Task.IsCanceled);
     }
 
