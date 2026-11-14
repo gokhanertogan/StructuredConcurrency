@@ -4,6 +4,7 @@
 [![Downloads](https://img.shields.io/nuget/dt/StructuredConcurrency.svg)](https://www.nuget.org/packages/StructuredConcurrency)
 [![CI](https://github.com/gokhanertogan/StructuredConcurrency/actions/workflows/ci.yml/badge.svg)](https://github.com/gokhanertogan/StructuredConcurrency/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![GitHub Marketplace](https://img.shields.io/badge/Marketplace-Task.WhenAll%20Cancellation%20Check-blue?logo=github)](https://github.com/marketplace/actions/task-whenall-cancellation-check)
 
 **Structured concurrency for C#.** Run tasks in parallel inside a `TaskGroup`. The first failure cancels the other tasks, no task keeps running after the group returns, and you get the real error back instead of a `TaskCanceledException`. It includes C# versions of JavaScript's `Promise.all`, `Promise.any` and `Promise.allSettled`, Kotlin's `withTimeout`, Go's `select` and `singleflight`, Erlang's supervisors, hedged requests, and the same model as Python's `asyncio.TaskGroup`, Kotlin's `coroutineScope`, Swift's task groups, Java's `StructuredTaskScope` and Go's `errgroup`.
 
@@ -12,6 +13,8 @@ dotnet add package StructuredConcurrency
 ```
 
 Every release is also published to [GitHub Packages](https://github.com/gokhanertogan?tab=packages&repo_name=StructuredConcurrency), with the packages attached to its [GitHub release](https://github.com/gokhanertogan/StructuredConcurrency/releases). Install from nuget.org unless you need one of those.
+
+> **Here from GitHub Marketplace?** The *Task.WhenAll Cancellation Check* action flags `Task.WhenAll` calls that keep the other operations running after one fails, on any C# repository's pull requests, with no package reference: `uses: gokhanertogan/StructuredConcurrency@v0.11.2`. See [GitHub Action: check pull requests](#github-action-check-pull-requests) for the setup, inputs and outputs.
 
 ## Promise.all, Promise.any and Promise.allSettled in C#
 

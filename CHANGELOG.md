@@ -3,6 +3,13 @@
 All notable changes to the StructuredConcurrency and StructuredConcurrency.Hosting packages. They are versioned and
 released together. Before 1.0 a minor version may break the API; every break is listed under **Breaking changes**.
 
+## Unreleased
+
+### Other
+
+- The action is on [GitHub Marketplace](https://github.com/marketplace/actions/task-whenall-cancellation-check); the
+  README links to it from the top.
+
 ## 0.11.2
 
 ### Fixes
