@@ -600,7 +600,7 @@ jobs:
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
-      - uses: gokhanertogan/StructuredConcurrency@v0.11.1
+      - uses: gokhanertogan/StructuredConcurrency@v0.11.2
 ```
 
 It reports `SC0004` in every C# project, and `SC0001` to `SC0003` too where the project uses `TaskGroup`. Each finding is an annotation on its line in the pull request's "Files changed" tab, and a row in the job summary. A build with `TreatWarningsAsErrors` doesn't fail because of them.
@@ -610,9 +610,9 @@ It reports `SC0004` in every C# project, and `SC0001` to `SC0003` too where the 
 | `project` | | The solution, project or folder to build. Empty builds the one in the working directory, as `dotnet build` does. |
 | `fail-on-findings` | `false` | `true` to fail the step when it finds something. By default it only reports. |
 | `build-arguments` | | More arguments for `dotnet build`, separated by spaces, such as `-c Release`. |
-| `analyzer-version` | the tag's | The StructuredConcurrency version whose analyzers run. By default, the one the action's tag released: `@v0.11.1` runs 0.11.1. |
+| `analyzer-version` | the tag's | The StructuredConcurrency version whose analyzers run. By default, the one the action's tag released: `@v0.11.2` runs 0.11.2. |
 
-The `findings` output is the number of places it reported, for example to post a comment or to fail only on a schedule. Use a release tag such as `@v0.11.1`, not `@main`: `main` can carry a version that isn't on nuget.org yet. The repository has to build, so install the SDKs it needs first. It adds the analyzers through MSBuild's `CustomAfterMicrosoftCommonTargets`; if your build sets that property itself, the action replaces it for this build.
+The `findings` output is the number of places it reported, for example to post a comment or to fail only on a schedule. Use a release tag such as `@v0.11.2`, not `@main`: `main` can carry a version that isn't on nuget.org yet. The repository has to build, so install the SDKs it needs first. It adds the analyzers through MSBuild's `CustomAfterMicrosoftCommonTargets`; if your build sets that property itself, the action replaces it for this build.
 
 > **Upgrading from 0.9:** `SC0002` now also reports a group's body that uses an outer token, so a build with `TreatWarningsAsErrors` can stop at code it now reports. The code fix switches it to `group.CancellationToken`.
 

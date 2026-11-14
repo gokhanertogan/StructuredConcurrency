@@ -3,6 +3,18 @@
 All notable changes to the StructuredConcurrency and StructuredConcurrency.Hosting packages. They are versioned and
 released together. Before 1.0 a minor version may break the API; every break is listed under **Breaking changes**.
 
+## 0.11.2
+
+### Fixes
+
+- **GitHub Action:** its description is now under GitHub Marketplace's 125-character limit, so the action can be
+  published there. No change to the packages or to what the action does.
+
+### Other
+
+- A workflow runs the GitHub Action from each released tag with its defaults, the way users run it, on Windows, Linux
+  and macOS.
+
 ## 0.11.1
 
 ### Fixes

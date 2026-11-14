@@ -43,7 +43,7 @@ if (-not (Test-Path $analyzer)) {
     }
     catch {
         # Most likely the action runs from a branch whose version hasn't been released yet.
-        Write-Output "::error title=Task.WhenAll Cancellation Check::Couldn't download StructuredConcurrency $version from nuget.org ($($_.Exception.Message)). Use a release tag of the action, such as @v0.11.1, or set analyzer-version."
+        Write-Output "::error title=Task.WhenAll Cancellation Check::Couldn't download StructuredConcurrency $version from nuget.org ($($_.Exception.Message)). Use a release tag of the action, such as @v0.11.2, or set analyzer-version."
         exit 1
     }
     Add-Type -AssemblyName System.IO.Compression.FileSystem

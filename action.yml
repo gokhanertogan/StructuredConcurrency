@@ -1,5 +1,5 @@
 name: Task.WhenAll Cancellation Check
-description: Finds Task.WhenAll calls in C# code that keep running the other operations after one fails, and marks them on the pull request.
+description: Flags Task.WhenAll calls in C# that keep the other operations running after one fails, right on the pull request.
 author: Gokhan Ertogan
 
 branding:
@@ -20,7 +20,7 @@ inputs:
     required: false
     default: ''
   analyzer-version:
-    description: The version of the StructuredConcurrency package whose analyzers run. Empty uses the version that the action's tag released, so `@v0.11.1` runs the 0.11.1 analyzers.
+    description: The version of the StructuredConcurrency package whose analyzers run. Empty uses the version that the action's tag released, so `@v0.11.2` runs the 0.11.2 analyzers.
     required: false
     default: ''
   analyzer-path:

@@ -72,7 +72,7 @@ User user = await TaskGroup.WithTimeoutAsync(TimeSpan.FromSeconds(2), ct => Load
 - **OpenTelemetry** tracing and metrics
 - **`StructuredBackgroundService`** in the [StructuredConcurrency.Hosting](https://www.nuget.org/packages/StructuredConcurrency.Hosting) package: a `BackgroundService` that shuts down cleanly
 - **Analyzers with code fixes** that catch ignored cancellation tokens, work that escapes its group, and `Task.WhenAll` calls that don't cancel the rest on failure
-- **A GitHub Action** that runs the `Task.WhenAll` check on any C# repository's pull requests, without a package reference: `uses: gokhanertogan/StructuredConcurrency@v0.11.1`
+- **A GitHub Action** that runs the `Task.WhenAll` check on any C# repository's pull requests, without a package reference: `uses: gokhanertogan/StructuredConcurrency@v0.11.2`
 
 Targets .NET 8 and later; trimming and NativeAOT compatible.
 
