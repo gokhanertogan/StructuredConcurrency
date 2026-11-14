@@ -3,6 +3,15 @@
 All notable changes to the StructuredConcurrency and StructuredConcurrency.Hosting packages. They are versioned and
 released together. Before 1.0 a minor version may break the API; every break is listed under **Breaking changes**.
 
+## 0.11.1
+
+### Fixes
+
+- **GitHub Action:** the action failed with `CS8034: Unable to load Analyzer assembly` on a fresh runner, because it
+  saved the downloaded analyzers under a file name with the version in it, and the compiler loads an analyzer by its
+  file name. Use `@v0.11.1`; `@v0.11.0` doesn't work. The action also builds without the shared compiler server now, so
+  an earlier build in the same job can't hand it another version of the analyzers.
+
 ## 0.11.0
 
 ### New

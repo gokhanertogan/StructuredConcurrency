@@ -20,7 +20,7 @@ inputs:
     required: false
     default: ''
   analyzer-version:
-    description: The version of the StructuredConcurrency package whose analyzers run. Empty uses the version that the action's tag released, so `@v0.11.0` runs the 0.11.0 analyzers.
+    description: The version of the StructuredConcurrency package whose analyzers run. Empty uses the version that the action's tag released, so `@v0.11.1` runs the 0.11.1 analyzers.
     required: false
     default: ''
   analyzer-path:

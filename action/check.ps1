@@ -35,14 +35,15 @@ New-Item -ItemType Directory -Force -Path $work | Out-Null
 
 $id = 'structuredconcurrency'
 $package = Join-Path $work "$id.$version.nupkg"
-$analyzer = if ($analyzerPath) { (Resolve-Path $analyzerPath).Path } else { Join-Path $work "StructuredConcurrency.Analyzers.$version.dll" }
+# The compiler loads an analyzer by its file name, so the version goes in the folder, not the name.
+$analyzer = if ($analyzerPath) { (Resolve-Path $analyzerPath).Path } else { Join-Path $work $version 'StructuredConcurrency.Analyzers.dll' }
 if (-not (Test-Path $analyzer)) {
     try {
         Invoke-WebRequest -Uri "https://api.nuget.org/v3-flatcontainer/$id/$version/$id.$version.nupkg" -OutFile $package
     }
     catch {
         # Most likely the action runs from a branch whose version hasn't been released yet.
-        Write-Output "::error title=Task.WhenAll Cancellation Check::Couldn't download StructuredConcurrency $version from nuget.org ($($_.Exception.Message)). Use a release tag of the action, such as @v0.11.0, or set analyzer-version."
+        Write-Output "::error title=Task.WhenAll Cancellation Check::Couldn't download StructuredConcurrency $version from nuget.org ($($_.Exception.Message)). Use a release tag of the action, such as @v0.11.1, or set analyzer-version."
         exit 1
     }
     Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -52,6 +53,7 @@ if (-not (Test-Path $analyzer)) {
         if ($null -eq $entry) {
             throw "StructuredConcurrency $version has no analyzers."
         }
+        New-Item -ItemType Directory -Force -Path (Split-Path $analyzer) | Out-Null
         [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $analyzer, $true)
     }
     finally {
@@ -94,7 +96,9 @@ $arguments = @('build')
 if ($project) {
     $arguments += $project
 }
-$arguments += '--no-incremental', '-nologo', "-p:CustomAfterMicrosoftCommonTargets=$targets"
+# UseSharedCompilation=false: a compiler server left running by an earlier build in the job may hold another version of
+# the analyzers.
+$arguments += '--no-incremental', '-nologo', '-p:UseSharedCompilation=false', "-p:CustomAfterMicrosoftCommonTargets=$targets"
 if ($buildArguments) {
     $arguments += $buildArguments -split '\s+' | Where-Object { $_ }
 }

@@ -69,13 +69,13 @@ jobs:
         shell: bash
         run: test "${{ steps.fail-on-findings.outcome }}" = "failure"
 
-      # The default path: the analyzers downloaded from nuget.org. 0.10.0 predates SC0004 without the package, so this
-      # uses the project that references it.
+      # The analyzers downloaded from nuget.org, as a user's run gets them, on the project without the package, where
+      # nothing else provides them.
       - id: from-nuget
         uses: ./
         with:
-          analyzer-version: 0.10.0
-          project: action/test/WithPackage
+          analyzer-version: 0.11.0
+          project: action/test/WithoutPackage
       - name: Expect one finding
         shell: bash
         run: test "${{ steps.from-nuget.outputs.findings }}" = "1"
